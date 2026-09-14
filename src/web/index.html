@@ -1,0 +1,162 @@
+<!--
+  ============================================================================
+  INTERFACE WEB — affiche l'état de l'automate en direct
+  ============================================================================
+  Cette page se connecte au WebSocket /ws (voir src/web.rs) et redessine le
+  tableau à chaque message reçu. Elle n'a AUCUNE logique métier : elle
+  affiche seulement ce que main.rs lui envoie via state_json().
+
+  ➜ Tu n'as pas besoin d'y toucher pour ajouter une variable : toute
+  variable créée avec mem.set(...) dans main.rs apparaît automatiquement
+  ici (voir le script en bas de page, qui boucle sur state.variables).
+
+  ➜ Modifie ce fichier seulement si tu veux changer l'APPARENCE (couleurs,
+  disposition) ou AJOUTER une fonctionnalité d'interface (ex: un bouton
+  pour modifier une variable — il faudrait alors aussi ajouter une route
+  côté serveur dans web.rs pour recevoir le changement).
+-->
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<title>Automate Simulator</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #161a21;
+    --border: #262b35;
+    --text: #e6e8eb;
+    --muted: #8b93a1;
+    --accent: #4da3ff;
+    --ok: #3ecf8e;
+    --alarm: #ff5c5c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    background: var(--bg);
+    color: var(--text);
+    padding: 24px;
+  }
+  h1 {
+    font-size: 16px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 16px 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--muted);
+  }
+  .dot.connected { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    font-size: 14px;
+  }
+  th {
+    color: var(--muted);
+    font-weight: 500;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  tr:last-child td { border-bottom: none; }
+  .type-tag {
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .val {
+    font-weight: 600;
+  }
+  .val.true { color: var(--alarm); }
+  .val.false { color: var(--ok); }
+  .cycle {
+    color: var(--muted);
+    font-size: 13px;
+    margin-top: 12px;
+  }
+  .flash {
+    animation: flash 0.3s ease;
+  }
+  @keyframes flash {
+    0% { background: rgba(77,163,255,0.15); }
+    100% { background: transparent; }
+  }
+</style>
+</head>
+<body>
+  <h1><span class="dot" id="dot"></span> Automate Simulator — Live</h1>
+  <table>
+    <thead>
+      <tr><th>Variable</th><th>Type</th><th>Valeur</th></tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <div class="cycle" id="cycle">en attente de connexion…</div>
+
+<script>
+  const dot = document.getElementById('dot');
+  const rows = document.getElementById('rows');
+  const cycleEl = document.getElementById('cycle');
+  const rowEls = {};
+
+  function connect() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+    ws.onopen = () => dot.classList.add('connected');
+    ws.onclose = () => {
+      dot.classList.remove('connected');
+      setTimeout(connect, 1000); // reconnexion auto
+    };
+    ws.onerror = () => ws.close();
+
+    ws.onmessage = (event) => {
+      // `state` correspond exactement à ce que state_json() construit
+      // côté Rust dans main.rs : { cycle: n, variables: [{name,type,value}] }
+      const state = JSON.parse(event.data);
+      cycleEl.textContent = `cycle ${state.cycle}`;
+
+      // ➜ Cette boucle affiche AUTOMATIQUEMENT toute variable présente
+      // dans la mémoire de l'automate — pas besoin de la modifier quand
+      // tu ajoutes une variable dans main.rs.
+      for (const v of state.variables) {
+        let tr = rowEls[v.name];
+        if (!tr) {
+          tr = document.createElement('tr');
+          tr.innerHTML = `<td>${v.name}</td><td class="type-tag">${v.type}</td><td class="val" id="val-${v.name}"></td>`;
+          rows.appendChild(tr);
+          rowEls[v.name] = tr;
+        }
+        const valEl = tr.querySelector('.val');
+        const display = typeof v.value === 'boolean' ? (v.value ? 'TRUE' : 'FALSE') : v.value;
+        if (valEl.textContent !== String(display)) {
+          valEl.classList.remove('flash');
+          void valEl.offsetWidth; // reset animation
+          valEl.classList.add('flash');
+        }
+        valEl.textContent = display;
+        valEl.className = 'val flash ' + (typeof v.value === 'boolean' ? String(v.value) : '');
+      }
+    };
+  }
+
+  connect();
+</script>
+</body>
+</html>
