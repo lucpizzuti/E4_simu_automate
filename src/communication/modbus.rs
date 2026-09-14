@@ -21,6 +21,10 @@
 //!   let addr = "192.168.1.50:502".parse().unwrap();
 //!   let mut modbus = ModbusClient::connect(addr).await.unwrap();
 //!
+//!   // 1bis. si ton équipement demande un unit ID / adresse d'esclave
+//!   //    précis (visible dans sa config, ex: 255) :
+//!   modbus.set_slave(255);
+//!
 //!   // 2. dans la boucle de cycle, lire une valeur reçue de l'équipement :
 //!   let temperature = modbus.read_decimal(30001).await.unwrap();
 //!
@@ -35,6 +39,7 @@ use anyhow::{anyhow, Result};
 use std::net::SocketAddr;
 use tokio_modbus::client::{tcp, Context};
 use tokio_modbus::prelude::*;
+use tokio_modbus::slave::{Slave, SlaveContext};
 
 /// Les 4 familles d'objets Modbus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +97,19 @@ impl ModbusClient {
     pub async fn connect(addr: SocketAddr) -> Result<Self> {
         let ctx = tcp::connect(addr).await?;
         Ok(Self { ctx })
+    }
+
+    /// Fixe l'unit ID (= "adresse d'esclave" dans certaines interfaces,
+    /// ex: Device01 configuré avec 255 dans l'appli du client). En Modbus
+    /// TCP direct (pas de passerelle vers un bus série), 255 (0xFF) est
+    /// justement la valeur standard "device TCP direct" — donc si ton
+    /// équipement affiche 255, c'est probablement la config normale, pas
+    /// une erreur. Appelle cette méthode juste après connect() si besoin :
+    ///
+    ///   let mut modbus = ModbusClient::connect(addr).await?;
+    ///   modbus.set_slave(255);
+    pub fn set_slave(&mut self, unit_id: u8) {
+        self.ctx.set_slave(Slave(unit_id));
     }
 
     /// Lit une valeur unique à l'adresse décimale donnée.

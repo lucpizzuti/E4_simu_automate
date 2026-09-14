@@ -128,6 +128,7 @@ async fn main() {
         mem.set("temperature", Value::Int16(25));
         mem.set("alarm", Value::Bool(false));
         mem.set("counter", Value::UInt32(0));
+        mem.set("counter2", Value::Int16(50));
 
         // ➜ AJOUTE ICI tes variables, par exemple :
         // mem.set("pressure", Value::UInt16(1013));
@@ -187,6 +188,11 @@ async fn main() {
             // Compteur de cycles interne (utile pour debug / supervision)
             if let Some(Value::UInt32(c)) = mem.get("counter") {
                 mem.set("counter", Value::UInt32(c + 1));
+            }
+
+            // Compteur de cycles interne (utile pour debug / supervision)
+            if let Some(Value::Int16(c)) = mem.get("counter2") {
+                mem.set("counter2", Value::Int16(c - 1));
             }
 
             // Diffusion de l'état complet vers l'interface web.
