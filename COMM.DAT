@@ -1,0 +1,14 @@
+VERSION,2,0
+BOARD,0,1,1,0,0,0,0,,,0,0,""
+NETWORK,2,Automate_E4,263,COM 1,9600,8,NO,1,,0,1,0,0,0,0,,,0#0#0#0#0,,,0,"",0,0,3,0,Modbus Ip
+EQT,2,Automate_E4,Device01,MODBUS_DEC,1,255,0,0,0,0,1,0,0,0,,0,,192#168#0#10#502#0#1#10#0#0#3#0#0,0,,,0,"",0
+FRAME,2,Automate_E4,Device01,FrameCapteur_tps_c,2,86,43,RW,2500,Holding registers,3,0,0,0,500,,0#0#0#0#0,,0,,,0,"MW2500 - MW2542"
+FRAME,2,Automate_E4,Device01,FrameEmplPlateaux,4,240,60,RW,2544,DWord Holding registers LMsb,13,0,0,0,500,,0#0#0#0#0,,0,,,0,"MW2544 - MW2663"
+FRAME,2,Automate_E4,Device01,Plateaux_Cuves,2,182,91,RW,2000,Holding registers,3,0,0,1,0,,0#0#0#0#0,,0,,,0,"MW2000 - MW2090"
+FRAME,2,Automate_E4,Device01,FrameRobotsEtats,2,162,81,RW,4000,Holding registers,3,0,0,1,0,,0#0#0#0#0,,0,,,0,"MW4000 - MW4080"
+FRAME,2,Automate_E4,Device01,FrameRobotsEvents,2,78,39,R,4500,Holding registers,3,0,0,1,0,,0#0#0#0#0,,0,,,0,"MW4510 - MW4538"
+FRAME,2,Automate_E4,Device01,FrameFour,2,30,15,RW,5000,Holding registers,3,0,0,0,500,,0#0#0#0#0,,0,,,0,"MW5000 - MW5014"
+FRAME,2,Automate_E4,Device01,FrameEchangePcvue,2,66,33,RW,2664,Holding registers,3,0,0,0,500,,0#0#0#0#0,,0,,,0,"MW2664 - MW2696"
+FRAME,2,Automate_E4,Device01,FrameJUMO,2,70,35,RW,7500,Holding registers,3,0,0,1,0,,0#0#0#0#0,,0,,,0,"MW7500 - MW7534"
+FRAME,2,Automate_E4,Device01,FrameFourCMD,2,38,19,RW,5508,Holding registers,3,0,0,1,0,,0#0#0#0#0,,0,,,0,"MW5500 - MW5526"
+FRAME,2,Automate_E4,Device01,Secu,2,64,32,R,10170,Holding registers,3,0,0,0,500,,0#0#0#0#0,,0,,,0,"MW10170-MW10202"

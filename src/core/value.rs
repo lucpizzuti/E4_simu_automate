@@ -37,7 +37,13 @@ impl Value {
     /// équivalent flottant.
     pub fn as_f64(&self) -> f64 {
         match self {
-            Value::Bool(b) => if *b { 1.0 } else { 0.0 },
+            Value::Bool(b) => {
+                if *b {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
             Value::Int16(v) => *v as f64,
             Value::UInt16(v) => *v as f64,
             Value::Word(v) => *v as f64,

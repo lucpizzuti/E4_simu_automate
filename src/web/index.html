@@ -31,6 +31,7 @@
       --accent: #4da3ff;
       --ok: #3ecf8e;
       --alarm: #ff5c5c;
+      --input: #202631;
     }
 
     * {
@@ -124,6 +125,97 @@
       animation: flash 0.3s ease;
     }
 
+    .settings {
+      margin-top: 28px;
+    }
+
+    .settings h2 {
+      color: var(--muted);
+      font-size: 14px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .frame {
+      margin: 12px 0;
+      padding: 14px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+
+    .frame h3 {
+      margin: 0 0 10px;
+      font-size: 14px;
+    }
+
+    .frame label {
+      display: block;
+      margin: 8px 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    input,
+    textarea,
+    button {
+      color: var(--text);
+      background: var(--input);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 8px;
+      font: inherit;
+    }
+
+    input {
+      width: 120px;
+    }
+
+    textarea {
+      display: block;
+      width: 100%;
+      min-height: 68px;
+      resize: vertical;
+    }
+
+    button {
+      cursor: pointer;
+      border-color: var(--accent);
+    }
+
+    .frame-toggle {
+      margin: 0 0 8px;
+    }
+
+    .frame-add-register {
+      margin: 0 0 8px 8px;
+    }
+
+    .frame-remove-register {
+      margin: 0 0 8px 8px;
+    }
+
+    .variable-bindings {
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px solid var(--border);
+    }
+
+    .binding-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 6px 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    #saveStatus {
+      color: var(--muted);
+      margin-left: 10px;
+      font-size: 13px;
+    }
+
     @keyframes flash {
       0% {
         background: rgba(77, 163, 255, 0.15);
@@ -150,11 +242,306 @@
   </table>
   <div class="cycle" id="cycle">en attente de connexion…</div>
 
+  <section class="settings">
+    <h2>Configuration Modbus TCP</h2>
+    <p class="cycle">Associez les variables de simulation à leurs registres pour synchroniser les valeurs dans les deux sens. Les valeurs maximales dépendent du type de la variable liée. Les changements sont sauvegardés et actifs immédiatement.</p>
+    <form id="modbusForm">
+      <div id="frames"></div>
+      <button type="submit">Enregistrer la configuration</button>
+      <span id="saveStatus" role="status"></span>
+    </form>
+  </section>
+
   <script>
     const dot = document.getElementById('dot');
     const rows = document.getElementById('rows');
     const cycleEl = document.getElementById('cycle');
+    const framesEl = document.getElementById('frames');
+    const saveStatus = document.getElementById('saveStatus');
     const rowEls = {};
+    let variablesByName = {};
+
+    async function loadModbusConfig() {
+      const response = await fetch('/api/modbus');
+      if (!response.ok) throw new Error(await response.text());
+      const config = await response.json();
+      variablesByName = Object.fromEntries(config.variables.map((variable) => [variable.name, variable]));
+      framesEl.replaceChildren();
+      for (const frame of config.frames) {
+        const section = document.createElement('section');
+        section.className = 'frame';
+        const title = document.createElement('h3');
+        title.textContent = `${frame.name} — ${frame.values.length} registres${frame.read_only ? ' (lecture seule côté Modbus)' : ''}`;
+        section.appendChild(title);
+
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'frame-toggle';
+        section.dataset.name = frame.name;
+        section.dataset.count = frame.values.length;
+        section.dataset.minimum = frame.minimum_registers;
+        section._bindings = frame.bindings || [];
+        const maximumValues = () => {
+          const maxima = Array(Number(section.dataset.count)).fill(65535);
+          for (const binding of section._bindings) {
+            const variable = variablesByName[binding.variable];
+            if (!variable) continue;
+            const words = variable.type === 'BOOL' ? [1]
+              : variable.type === 'INT16' ? [32767]
+                : ['UINT32', 'DWORD'].includes(variable.type) ? [65535, 65535]
+                  : [65535];
+            words.forEach((word, index) => {
+              if (binding.offset + index < maxima.length) maxima[binding.offset + index] = word;
+            });
+          }
+          return maxima;
+        };
+        const isAtMaximum = () => {
+          const current = section.querySelector('.frame-values').value
+            .split(',').map((value) => Number(value.trim()));
+          const maxima = maximumValues();
+          return current.length === maxima.length && current.every((value, index) => value === maxima[index]);
+        };
+        toggle.addEventListener('click', async () => {
+          const values = section.querySelector('.frame-values');
+          const maxima = maximumValues();
+          values.value = (isAtMaximum() ? maxima.map(() => 0) : maxima).join(', ');
+          await saveModbusConfig();
+        });
+        section.appendChild(toggle);
+
+        const addRegister = document.createElement('button');
+        addRegister.type = 'button';
+        addRegister.className = 'frame-add-register';
+        addRegister.textContent = '+ Ajouter un registre';
+        addRegister.addEventListener('click', async () => {
+          const count = Number(section.dataset.count);
+          const address = Number(section.querySelector('.frame-address').value);
+          if (count >= 65536 || address + count >= 65536) {
+            saveStatus.textContent = `Impossible d'ajouter un registre après l'adresse 65535 (${section.dataset.name}).`;
+            return;
+          }
+          const values = section.querySelector('.frame-values');
+          values.value = `${values.value.trim().replace(/,\s*$/, '')}, 0`;
+          section.dataset.count = count + 1;
+          title.textContent = `${section.dataset.name} — ${count + 1} registres${frame.read_only ? ' (lecture seule côté Modbus)' : ''}`;
+          await saveModbusConfig();
+        });
+        section.appendChild(addRegister);
+
+        const removeRegister = document.createElement('button');
+        removeRegister.type = 'button';
+        removeRegister.className = 'frame-remove-register';
+        removeRegister.textContent = '− Retirer un registre';
+        removeRegister.disabled = frame.values.length <= frame.minimum_registers;
+        removeRegister.title = removeRegister.disabled
+          ? `La frame doit garder au moins ${frame.minimum_registers} registres (COMM.DAT)`
+          : '';
+        removeRegister.addEventListener('click', async () => {
+          const count = Number(section.dataset.count);
+          const minimum = Number(section.dataset.minimum);
+          if (count <= minimum) {
+            saveStatus.textContent = `${section.dataset.name} doit garder au moins ${minimum} registres (COMM.DAT).`;
+            return;
+          }
+          const lastRegister = count - 1;
+          const bindingOnLastRegister = section._bindings.some((binding) => {
+            const type = variablesByName[binding.variable]?.type;
+            const width = ['UINT32', 'DWORD'].includes(type) ? 2 : 1;
+            return binding.offset + width > lastRegister;
+          });
+          if (bindingOnLastRegister) {
+            saveStatus.textContent = 'Délie d’abord la variable associée au dernier registre.';
+            return;
+          }
+          const values = section.querySelector('.frame-values');
+          const entries = values.value.split(',').map((value) => value.trim());
+          entries.pop();
+          values.value = entries.join(', ');
+          section.dataset.count = count - 1;
+          title.textContent = `${section.dataset.name} — ${count - 1} registres${frame.read_only ? ' (lecture seule côté Modbus)' : ''}`;
+          await saveModbusConfig();
+        });
+        section.appendChild(removeRegister);
+
+        const bindingsSection = document.createElement('div');
+        bindingsSection.className = 'variable-bindings';
+        const bindingsTitle = document.createElement('label');
+        bindingsTitle.textContent = 'Variables liées aux registres (DWORD/UINT32 = 2 registres, poids fort en premier)';
+        bindingsSection.appendChild(bindingsTitle);
+        const bindingsList = document.createElement('div');
+        bindingsList.className = 'bindings-list';
+        bindingsSection.appendChild(bindingsList);
+        const variableSelect = document.createElement('select');
+        variableSelect.className = 'binding-variable';
+        for (const variable of config.variables) {
+          const option = document.createElement('option');
+          option.value = variable.name;
+          option.textContent = `${variable.name} (${variable.type})`;
+          variableSelect.appendChild(option);
+        }
+        bindingsSection.appendChild(variableSelect);
+        const bindingOffset = document.createElement('input');
+        bindingOffset.type = 'number';
+        bindingOffset.min = '0';
+        bindingOffset.max = String(frame.values.length - 1);
+        bindingOffset.value = '0';
+        bindingOffset.className = 'binding-offset';
+        bindingOffset.title = 'Offset du registre dans cette frame';
+        bindingsSection.appendChild(bindingOffset);
+        const bindButton = document.createElement('button');
+        bindButton.type = 'button';
+        bindButton.textContent = 'Lier la variable';
+        bindButton.addEventListener('click', async () => {
+          const variable = variableSelect.value;
+          const offset = Number(bindingOffset.value);
+          if (!variable) {
+            saveStatus.textContent = 'Aucune variable disponible à lier.';
+            return;
+          }
+          if (section._bindings.some((binding) => binding.variable === variable)) {
+            saveStatus.textContent = `${variable} est déjà liée à un registre.`;
+            return;
+          }
+          section._bindings.push({ variable, offset });
+          renderBindings();
+          await saveModbusConfig();
+        });
+        bindingsSection.appendChild(bindButton);
+        section.appendChild(bindingsSection);
+
+        function renderBindings() {
+          bindingsList.replaceChildren();
+          for (const binding of section._bindings) {
+            const variable = variablesByName[binding.variable];
+            const row = document.createElement('div');
+            row.className = 'binding-row';
+            const description = document.createElement('span');
+            description.textContent = `${binding.variable} (${variable?.type || 'type inconnu'}) → registre ${binding.offset}`;
+            row.appendChild(description);
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.textContent = 'Délier';
+            remove.addEventListener('click', async () => {
+              section._bindings = section._bindings.filter((item) => item.variable !== binding.variable);
+              renderBindings();
+              await saveModbusConfig();
+            });
+            row.appendChild(remove);
+            bindingsList.appendChild(row);
+          }
+          const mappedNames = new Set(
+            [...framesEl.querySelectorAll('.frame')].flatMap((item) => item._bindings || [])
+              .concat(section._bindings || [])
+              .map((binding) => binding.variable)
+          );
+          for (const option of variableSelect.options) {
+            option.disabled = mappedNames.has(option.value) && !section._bindings.some((item) => item.variable === option.value);
+          }
+        }
+        renderBindings();
+
+        const addressLabel = document.createElement('label');
+        addressLabel.textContent = 'Adresse de départ (0–65535)';
+        const address = document.createElement('input');
+        address.type = 'number';
+        address.min = '0';
+        address.max = '65535';
+        address.required = true;
+        address.value = frame.address;
+        address.className = 'frame-address';
+        addressLabel.appendChild(address);
+        section.appendChild(addressLabel);
+
+        const valuesLabel = document.createElement('label');
+        valuesLabel.textContent = 'Valeurs uint16 (séparées par des virgules)';
+        const values = document.createElement('textarea');
+        values.required = true;
+        values.spellcheck = false;
+        values.value = frame.values.join(', ');
+        values.className = 'frame-values';
+        valuesLabel.appendChild(values);
+        section.appendChild(valuesLabel);
+        toggle.textContent = isAtMaximum() ? 'Tout mettre à 0' : 'Tout mettre au maximum';
+        framesEl.appendChild(section);
+      }
+    }
+
+    async function saveModbusConfig() {
+      saveStatus.textContent = 'Enregistrement…';
+      try {
+        const frames = [...framesEl.querySelectorAll('.frame')].map((section) => {
+          const values = section.querySelector('.frame-values').value
+            .split(',')
+            .map((value) => value.trim())
+            .filter((value) => value !== '')
+            .map((value) => {
+              if (!/^\d+$/.test(value)) throw new Error(`Valeur invalide dans ${section.dataset.name}`);
+              const number = Number(value);
+              if (!Number.isInteger(number) || number > 65535) throw new Error(`Valeur hors plage uint16 dans ${section.dataset.name}`);
+              return number;
+            });
+          if (values.length !== Number(section.dataset.count)) {
+            throw new Error(`${section.dataset.name} doit contenir exactement ${section.dataset.count} valeurs`);
+          }
+          return {
+            name: section.dataset.name,
+            address: Number(section.querySelector('.frame-address').value),
+            values,
+            bindings: section._bindings || [],
+          };
+        });
+        const response = await fetch('/api/modbus', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ frames }),
+        });
+        if (!response.ok) throw new Error(await response.text());
+        saveStatus.textContent = 'Configuration enregistrée.';
+        const refreshedResponse = await fetch('/api/modbus');
+        if (!refreshedResponse.ok) throw new Error(await refreshedResponse.text());
+        const refreshed = await refreshedResponse.json();
+        for (const section of framesEl.querySelectorAll('.frame')) {
+          const savedFrame = refreshed.frames.find((frame) => frame.name === section.dataset.name);
+          if (savedFrame) {
+            section.querySelector('.frame-values').value = savedFrame.values.join(', ');
+            section._bindings = savedFrame.bindings || [];
+          }
+          const currentValues = section.querySelector('.frame-values').value
+            .split(',')
+            .map((value) => value.trim())
+            .filter((value) => value !== '');
+          section.dataset.count = currentValues.length;
+          const minimum = Number(section.dataset.minimum);
+          const removeRegister = section.querySelector('.frame-remove-register');
+          removeRegister.disabled = currentValues.length <= minimum;
+          removeRegister.title = removeRegister.disabled
+            ? `La frame doit garder au moins ${minimum} registres (COMM.DAT)`
+            : '';
+          const title = section.querySelector('h3');
+          const name = section.dataset.name;
+          title.textContent = `${name} — ${currentValues.length} registres${title.textContent.includes('lecture seule') ? ' (lecture seule côté Modbus)' : ''}`;
+          const values = section.querySelector('.frame-values').value
+            .split(',')
+            .map((value) => value.trim());
+          section.querySelector('.frame-toggle').textContent =
+            values.every((value, index) => Number(value) === (() => {
+              const binding = (section._bindings || []).find((item) => item.offset <= index
+                && index < item.offset + (['UINT32', 'DWORD'].includes(variablesByName[item.variable]?.type) ? 2 : 1));
+              if (!binding) return 65535;
+              const type = variablesByName[binding.variable]?.type;
+              return type === 'BOOL' ? 1 : type === 'INT16' ? 32767 : 65535;
+            })()) ? 'Tout mettre à 0' : 'Tout mettre au maximum';
+        }
+      } catch (error) {
+        saveStatus.textContent = error.message;
+      }
+    }
+
+    document.getElementById('modbusForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      await saveModbusConfig();
+    });
 
     function connect() {
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -197,6 +584,9 @@
       };
     }
 
+    loadModbusConfig().catch((error) => {
+      saveStatus.textContent = `Erreur de chargement : ${error.message}`;
+    });
     connect();
   </script>
 </body>

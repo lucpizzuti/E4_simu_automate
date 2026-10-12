@@ -10,14 +10,16 @@
 //! CE QUI est affiché, modifie web/index.html. Pour changer QUAND/QUOI est
 //! envoyé, modifie state_json() et la boucle dans main.rs.
 
+use crate::communication::modbus_server::{FrameUpdate, ModbusState, UpdateError};
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         State,
     },
+    http::StatusCode,
     response::{Html, IntoResponse},
     routing::get,
-    Router,
+    Json, Router,
 };
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -29,6 +31,7 @@ use tokio::sync::broadcast;
 #[derive(Clone)]
 pub struct AppState {
     pub tx: broadcast::Sender<String>,
+    pub modbus: ModbusState,
 }
 
 /// Construit les routes de l'application. Appelé une seule fois dans main().
@@ -36,10 +39,50 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/ws", get(ws_handler))
+        .route("/api/modbus", get(get_modbus).put(update_modbus))
         .with_state(state)
-    // ➜ Si tu ajoutes plus tard une route pour MODIFIER une variable
-    //   depuis le navigateur (ex: POST /variables/{name}), c'est ici
-    //   qu'il faudra l'ajouter avec .route("/variables/:name", post(...)).
+}
+
+async fn get_modbus(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    match state.modbus.snapshot() {
+        Ok(frames) => match state.modbus.variable_snapshot() {
+            Ok(variables) => (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "frames": frames,
+                    "variables": variables.into_iter().map(|(name, variable_type, value)| {
+                        serde_json::json!({ "name": name, "type": variable_type, "value": value })
+                    }).collect::<Vec<_>>(),
+                })),
+            )
+                .into_response(),
+            Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+        },
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+    }
+}
+
+async fn update_modbus(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<ModbusConfigUpdate>,
+) -> impl IntoResponse {
+    match state.modbus.update(payload.frames) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(UpdateError::Invalid(error)) => (StatusCode::BAD_REQUEST, error).into_response(),
+        Err(UpdateError::Persistence(error)) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response()
+        }
+        Err(UpdateError::LockPoisoned) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "verrou de configuration Modbus indisponible",
+        )
+            .into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct ModbusConfigUpdate {
+    frames: Vec<FrameUpdate>,
 }
 
 /// Sert la page HTML telle quelle. `include_str!` l'intègre directement
@@ -50,10 +93,7 @@ async fn index() -> Html<&'static str> {
 
 /// Point d'entrée WebSocket : upgrade la connexion HTTP en WebSocket puis
 /// délègue à handle_socket.
-async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> impl IntoResponse {
     ws.on_upgrade(|socket| handle_socket(socket, state))
 }
 

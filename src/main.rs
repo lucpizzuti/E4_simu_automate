@@ -19,10 +19,12 @@ mod communication;
 mod core;
 mod web;
 
+use anyhow::{Context, Result};
+use communication::modbus_server::{serve as serve_modbus, ModbusState};
 use core::memory::Memory;
 use core::value::Value;
 use serde_json::json;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tokio::sync::broadcast;
 use tokio::time::{sleep, Duration};
 
@@ -45,9 +47,11 @@ use tokio::time::{sleep, Duration};
 //   let ma_variable = mem.get("nom_de_la_variable").unwrap().as_f64();
 //   mem.set("autre_variable", Value::Bool(ma_variable > 100.0));
 //
-fn run_logic(mem: &mut Memory) {
-    let temperature = mem.get("temperature").unwrap().as_f64();
-    mem.set("alarm", Value::Bool(temperature > 50.0));
+fn run_logic(mem: &mut Memory, compute_alarm: bool) {
+    if compute_alarm {
+        let temperature = mem.get("temperature").unwrap().as_f64();
+        mem.set("alarm", Value::Bool(temperature > 50.0));
+    }
 
     // ➜ AJOUTE ICI tes propres règles, par exemple :
     //
@@ -95,113 +99,92 @@ fn state_json(cycle: u32, mem: &Memory) -> String {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<()> {
+    let mut initial_memory = Memory::new();
+    initial_memory.set("temperature", Value::Int16(25));
+    initial_memory.set("alarm", Value::Bool(false));
+    initial_memory.set("counter", Value::UInt32(0));
+    initial_memory.set("counter2", Value::Int16(50));
+    let memory = Arc::new(RwLock::new(initial_memory));
+    let (modbus, modbus_port) = ModbusState::load(
+        std::path::Path::new("COMM.DAT"),
+        std::path::Path::new("modbus_config.json"),
+        memory.clone(),
+    )?;
     // `tx` est le "haut-parleur" WebSocket : tout ce qu'on envoie avec
     // tx.send(...) est reçu par tous les navigateurs connectés à la page.
     let (tx, _rx) = broadcast::channel::<String>(16);
-    let state = Arc::new(web::AppState { tx: tx.clone() });
+    let state = Arc::new(web::AppState {
+        tx: tx.clone(),
+        modbus: modbus.clone(),
+    });
 
     // --- Boucle de simulation (le "moteur automate") ---
     // Tourne dans sa propre tâche asynchrone, en parallèle du serveur web,
     // pour que l'un ne bloque jamais l'autre.
+    let loop_memory = memory.clone();
+    let loop_modbus = modbus.clone();
     tokio::spawn(async move {
-        let mut mem = Memory::new();
-
-        // ========================================================================
-        // VARIABLES — ➜ AJOUTE ICI tes propres variables (mémoire de l'automate)
-        // ========================================================================
-        //
-        // Chaque ligne mem.set(nom, valeur) crée une variable dans la mémoire.
-        // Elle sera automatiquement :
-        //   - visible dans l'interface web (table "Variable / Type / Valeur")
-        //   - utilisable dans run_logic() ci-dessus via mem.get("nom")
-        //   - mappable vers une adresse Modbus (voir le bloc suivant)
-        //
-        // Types disponibles (voir src/core/value.rs) :
-        //   Value::Bool(bool)     -> un booléen (ex: alarme, marche/arrêt)
-        //   Value::Int16(i16)     -> entier signé 16 bits (-32768 à 32767)
-        //   Value::UInt16(u16)    -> entier non signé 16 bits (0 à 65535)
-        //   Value::Word(u16)      -> comme UInt16, mais sémantique "mot" PLC
-        //   Value::UInt32(u32)    -> entier non signé 32 bits
-        //   Value::DWord(u32)     -> comme UInt32, mais sémantique "double mot" PLC
-        //
-        mem.set("temperature", Value::Int16(25));
-        mem.set("alarm", Value::Bool(false));
-        mem.set("counter", Value::UInt32(0));
-        mem.set("counter2", Value::Int16(50));
-
-        // ➜ AJOUTE ICI tes variables, par exemple :
-        // mem.set("pressure", Value::UInt16(1013));
-        // mem.set("motor", Value::Bool(false));
-        // mem.set("overheat_count", Value::UInt32(0));
-
-        // (Optionnel) Se connecter à un vrai équipement Modbus TCP.
-        // Décommente et adapte l'IP/port pour brancher ton équipement réel
-        // (voir aussi src/communication/modbus.rs pour le détail de l'API).
-        //
-        // use communication::modbus::ModbusClient;
-        // let modbus_addr = "192.168.1.50:502".parse().unwrap();
-        // let mut modbus = ModbusClient::connect(modbus_addr).await
-        //     .expect("connexion Modbus impossible");
-
         let mut cycle: u32 = 0;
         loop {
             cycle += 1;
 
-            // 1. LECTURE DES ENTRÉES
-            // Aujourd'hui : simulation. Demain : lecture réelle sur l'équipement.
-            simulate_input(&mut mem, cycle);
+            let frames = match loop_modbus.snapshot() {
+                Ok(frames) => frames,
+                Err(error) => {
+                    eprintln!("Erreur de lecture des associations Modbus : {error:#}");
+                    break;
+                }
+            };
+            let variable_is_mapped = |name: &str| {
+                frames.iter().any(|frame| {
+                    frame
+                        .bindings
+                        .iter()
+                        .any(|binding| binding.variable == name)
+                })
+            };
+            {
+                let Ok(mut mem) = loop_memory.write() else {
+                    eprintln!("Erreur : verrou de mémoire indisponible");
+                    break;
+                };
+                if !variable_is_mapped("temperature") {
+                    simulate_input(&mut mem, cycle);
+                }
+                run_logic(&mut mem, !variable_is_mapped("alarm"));
 
-            // ================================================================
-            // ENVOI / RÉCEPTION DE DONNÉES MODBUS — ➜ AJOUTE ICI
-            // ================================================================
-            //
-            // C'est ICI, dans la boucle de cycle, qu'on lit/écrit le vrai
-            // équipement Modbus, entre la lecture des entrées et la logique.
-            // Modèle à décommenter/adapter une fois `modbus` connecté
-            // ci-dessus :
-            //
-            // // Lire une température depuis le registre 30001 (input register 0)
-            // // et l'écrire dans la mémoire locale de l'automate :
-            // if let Ok(raw) = modbus.read_decimal(30001).await {
-            //     mem.set("temperature", Value::Int16(raw as i16));
-            // }
-            //
-            // // Écrire l'état de l'alarme locale vers le coil 00001 de
-            // // l'équipement (donc APRÈS run_logic(), qui calcule "alarm") :
-            // let alarm = mem.get("alarm").unwrap().as_bool();
-            // let _ = modbus.write_decimal(1, alarm as u16).await;
-            //
-            // Rappel des familles d'adresses décimales (voir modbus.rs) :
-            //   00001-09999 -> Coil            (lecture/écriture, 1 bit)
-            //   10001-19999 -> DiscreteInput   (lecture seule, 1 bit)
-            //   30001-39999 -> InputRegister   (lecture seule, 16 bits)
-            //   40001-49999 -> HoldingRegister (lecture/écriture, 16 bits)
+                if let Some(Value::UInt32(c)) = mem.get("counter") {
+                    mem.set("counter", Value::UInt32(c.wrapping_add(1)));
+                }
 
-            // 2. LOGIQUE UTILISATEUR (le "programme" de l'automate)
-            run_logic(&mut mem);
-
-            // 3. écriture Modbus des sorties calculées : voir bloc ci-dessus,
-            //    à placer ici si l'écriture doit avoir lieu APRÈS la logique
-            //    (cas le plus courant : on calcule "alarm" puis on l'envoie).
-
-            // Compteur de cycles interne (utile pour debug / supervision)
-            if let Some(Value::UInt32(c)) = mem.get("counter") {
-                mem.set("counter", Value::UInt32(c + 1));
+                if let Some(Value::Int16(c)) = mem.get("counter2") {
+                    mem.set("counter2", Value::Int16(c.wrapping_sub(1)));
+                }
             }
 
-            // Compteur de cycles interne (utile pour debug / supervision)
-            if let Some(Value::Int16(c)) = mem.get("counter2") {
-                mem.set("counter2", Value::Int16(c - 1));
+            if let Err(error) = loop_modbus.sync_from_memory() {
+                eprintln!("Erreur de synchronisation Modbus : {error:#}");
             }
-
-            // Diffusion de l'état complet vers l'interface web.
-            // On ignore l'erreur : elle signifie juste "aucun client connecté".
-            let _ = tx.send(state_json(cycle, &mem));
-
-            // Durée d'un cycle. Un vrai automate tourne souvent entre 10ms
-            // et quelques centaines de ms selon l'application.
+            let state = {
+                let Ok(mem) = loop_memory.read() else {
+                    eprintln!("Erreur : verrou de mémoire indisponible");
+                    break;
+                };
+                state_json(cycle, &mem)
+            };
+            let _ = tx.send(state);
             sleep(Duration::from_millis(200)).await;
+        }
+    });
+
+    let modbus_listener = tokio::net::TcpListener::bind(("0.0.0.0", modbus_port))
+        .await
+        .with_context(|| format!("impossible d'écouter sur le port Modbus {modbus_port}"))?;
+    println!("=== Serveur Modbus TCP sur 0.0.0.0:{modbus_port} ===");
+    tokio::spawn(async move {
+        if let Err(error) = serve_modbus(modbus_listener, modbus).await {
+            eprintln!("Erreur du serveur Modbus : {error:#}");
         }
     });
 
@@ -209,7 +192,10 @@ async fn main() {
     // Sert la page HTML (src/web/index.html) et le endpoint WebSocket /ws
     // qui diffuse l'état de la mémoire à chaque cycle. Voir src/web.rs.
     let app = web::build_router(state);
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
+        .await
+        .context("impossible d'écouter sur le port web 3000")?;
     println!("=== Automate Simulator — serveur sur http://127.0.0.1:3000 ===");
     axum::serve(listener, app).await.unwrap();
+    Ok(())
 }

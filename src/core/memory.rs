@@ -24,7 +24,9 @@ pub struct Memory {
 
 impl Memory {
     pub fn new() -> Self {
-        Self { values: HashMap::new() }
+        Self {
+            values: HashMap::new(),
+        }
     }
 
     /// Crée ou met à jour une variable. Si le nom existe déjà, l'ancienne

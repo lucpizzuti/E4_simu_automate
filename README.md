@@ -1,8 +1,8 @@
 # Automate Simulator
 
 Un petit simulateur d'automate (PLC) en Rust : une mémoire de variables typées,
-une logique métier exécutée en boucle, une interface web qui affiche l'état en
-direct, et un client Modbus TCP pour parler à un vrai équipement.
+une logique métier exécutée en boucle, une interface web de supervision et de
+configuration, et un serveur Modbus TCP alimenté par les frames de `COMM.DAT`.
 
 ## Démarrage rapide
 
@@ -10,29 +10,31 @@ direct, et un client Modbus TCP pour parler à un vrai équipement.
 cargo run
 ```
 
-Puis ouvre **http://127.0.0.1:3000** dans un navigateur. Tu verras la
-température monter/descendre en triangle (20°→60°→20°) et l'alarme passer
-en rouge au-dessus de 50°, mis à jour 5 fois par seconde.
+Puis ouvre **http://127.0.0.1:3000** dans un navigateur. La page permet de
+modifier les adresses de départ et les valeurs des registres définis dans
+`COMM.DAT`, et d'ajouter ou retirer des registres avec les boutons de chaque
+frame. La taille d'une frame ne peut pas être réduite sous le minimum déclaré
+dans `COMM.DAT`. Les modifications sont appliquées immédiatement et
+sauvegardées dans `modbus_config.json`. Tu peux aussi associer une variable
+de simulation à un registre (les types 32 bits occupent deux registres) :
+les écritures Modbus mettent à jour la variable et la simulation republie
+sa valeur vers les registres. Le bouton de maximum utilise le maximum du
+type de la variable liée (par exemple BOOL = 1, INT16 = 32767, UINT16 = 65535).
 
-Pour tester la partie Modbus (dans un second terminal, le premier doit
-rester ouvert) :
-
-```bash
-cargo run --example mock_device
-```
-
-Ça lance un faux équipement Modbus TCP sur `127.0.0.1:5502`, pour pouvoir
-tester le client sans matériel réel.
+Le serveur Modbus TCP écoute sur le port défini dans `COMM.DAT` (502 dans le
+fichier fourni), sur toutes les interfaces réseau. Un client Modbus peut lire
+les Holding Registers correspondant aux plages des frames. Les valeurs
+initiales sont à zéro. Les frames marquées `RW` acceptent aussi les écritures
+Modbus; les frames `R` restent en lecture seule côté Modbus. Le port TCP 502
+peut nécessiter des droits élevés ou être déjà utilisé.
 
 ## Comment le projet est organisé
 
 ```
 Cargo.toml
-examples/
-  mock_device.rs        <- faux équipement Modbus TCP, pour les tests
 src/
   main.rs                <- POINT D'ENTRÉE : variables, logique, boucle
-  web.rs                 <- serveur HTTP + WebSocket
+  web.rs                 <- serveur HTTP, API de configuration + WebSocket
   web/index.html          <- page affichée dans le navigateur
   core/
     memory.rs             <- la mémoire (table nom -> valeur)
@@ -40,6 +42,7 @@ src/
     datatype.rs             <- le catalogue des types possibles
   communication/
     modbus.rs             <- client Modbus TCP (adressage décimal)
+    modbus_server.rs      <- serveur Modbus TCP alimenté par COMM.DAT
 ```
 
 Chaque fichier `.rs` commence par un bloc de commentaire qui explique son
@@ -85,7 +88,10 @@ Types disponibles (définis dans `src/core/value.rs`) :
 Dès que la variable est créée avec `mem.set(...)`, elle est **automatiquement** :
 - utilisable dans la logique (`mem.get("pressure")`)
 - affichée dans l'interface web (aucune modification du HTML nécessaire)
-- mappable vers une adresse Modbus (voir section 3)
+- conservée dans la mémoire de la simulation
+
+Les registres Modbus exposés sont configurés indépendamment, à partir des
+frames de `COMM.DAT` (voir section 3).
 
 Si aucun des types ci-dessus ne convient (ex: besoin d'un nombre décimal),
 il faut d'abord l'ajouter dans `src/core/datatype.rs` et `src/core/value.rs`
@@ -118,82 +124,34 @@ il faut recompiler (`cargo run`) à chaque changement de règle. Une prochaine
 étape possible serait un vrai petit langage de script interprété, pour
 changer la logique sans recompiler (voir la section "Pistes pour la suite").
 
-## 3. Envoyer/recevoir des données via Modbus TCP
+## 3. Fournir des registres via Modbus TCP
 
-Le client est prêt dans `src/communication/modbus.rs`. Il utilise
-l'**adressage décimal** (style Modicon), le même que ton équipement
-MODBUS_DEC :
+Le serveur lit les frames `FRAME` de `COMM.DAT` et expose les registres
+Holding à leurs adresses de départ. La taille en octets de chaque frame est
+convertie en nombre de registres 16 bits. Les adresses sont celles déclarées
+dans le champ d'adresse de la frame (index de registre Modbus 0-based).
+La page Web permet de changer l'adresse et les valeurs; les réglages sont
+conservés dans `modbus_config.json`, sans modifier le fichier original
+`COMM.DAT`.
 
-| Plage d'adresses  | Famille          | Accès           | Taille |
-|--------------------|-------------------|------------------|--------|
-| 00001 – 09999       | Coil               | lecture/écriture | 1 bit  |
-| 10001 – 19999       | DiscreteInput      | lecture seule     | 1 bit  |
-| 30001 – 39999       | InputRegister      | lecture seule     | 16 bits|
-| 40001 – 49999       | HoldingRegister    | lecture/écriture  | 16 bits|
+Les clients Modbus utilisent généralement une adresse de protocole 0-based
+(par exemple le registre déclaré à `2500` est lu à l'offset 2500). Les interfaces
+qui affichent des références `4xxxx` doivent être configurées selon leur
+convention de numérotation.
 
-### Étape 1 — se connecter (une fois, au démarrage)
-
-Dans `main.rs`, section `VARIABLES`, décommenter et adapter :
-
-```rust
-use communication::modbus::ModbusClient;
-let modbus_addr = "192.168.1.50:502".parse().unwrap();
-let mut modbus = ModbusClient::connect(modbus_addr).await.unwrap();
-```
-
-Remplace `192.168.1.50:502` par l'IP réelle de ton équipement (502 est le
-port standard Modbus TCP). Pour tester sans matériel, mets plutôt
-`127.0.0.1:5502` et lance `cargo run --example mock_device` dans un autre
-terminal.
-
-### Étape 2 — lire une valeur reçue de l'équipement
-
-Dans la boucle de cycle, section `ENVOI / RÉCEPTION DE DONNÉES MODBUS`,
-**avant** `run_logic()` (on lit les entrées avant de calculer) :
-
-```rust
-if let Ok(raw) = modbus.read_decimal(30001).await {
-    mem.set("temperature", Value::Int16(raw as i16));
-}
-```
-
-### Étape 3 — écrire une valeur calculée vers l'équipement
-
-Toujours dans la boucle, mais **après** `run_logic()` (on écrit les
-sorties une fois qu'elles sont calculées) :
-
-```rust
-let alarm = mem.get("alarm").unwrap().as_bool();
-let _ = modbus.write_decimal(1, alarm as u16).await;
-```
-
-`main.rs` contient déjà ces deux modèles en commentaire, au bon endroit
-dans la boucle — il suffit de les décommenter et les adapter.
-
-**Limite actuelle** : `read_decimal`/`write_decimal` ne traitent qu'une
-seule adresse à la fois. Pour lire plusieurs registres consécutifs d'un
-coup (par exemple une valeur stockée sur 32 bits = 2 registres), il faudra
-étendre `modbus.rs` avec une méthode qui accepte un nombre de registres —
-voir le commentaire `➜` au-dessus de `read_decimal` dans ce fichier.
+Les valeurs web sont des entiers non signés 16 bits (0 à 65535). Les frames
+marquées `R` dans `COMM.DAT` restent modifiables depuis la page, mais refusent
+les écritures envoyées par un client Modbus.
 
 ## Pistes pour la suite
 
 Dans l'ordre le plus logique pour continuer à développer ce projet :
 
-1. **Mapping variable ↔ adresse Modbus** — au lieu d'écrire `modbus.read_decimal(30001)`
-   à la main pour chaque variable, créer une liste de correspondances
-   (`temperature -> 30001`, `alarm -> 00001`, ...) lue automatiquement à
-   chaque cycle.
-2. **Reconnexion automatique** — si l'équipement Modbus décroche (câble
-   débranché, redémarrage...), le programme doit retenter la connexion au
-   lieu de planter.
-3. **Vrai petit langage de script** — remplacer `run_logic()` codée en dur
+1. **Vrai petit langage de script** — remplacer `run_logic()` codée en dur
    par un interpréteur qui lit une logique écrite par l'utilisateur
    (`if temperature > 50 { alarm = true }`), modifiable sans recompiler.
-4. **Tableaux de variables** — `temperature[0]`, `temperature[1]`... pour
+2. **Tableaux de variables** — `temperature[0]`, `temperature[1]`... pour
    pouvoir écrire des boucles `for` dans la logique.
-5. **Édition depuis l'interface web** — pouvoir changer une valeur ou la
-   logique directement depuis le navigateur, pas seulement la regarder.
 
 ## Dépannage
 
@@ -206,6 +164,6 @@ Dans l'ordre le plus logique pour continuer à développer ce projet :
   d'avoir mappé une variable Modbus qui utilise `Word` ou `DWord`). Ce sont
   des avertissements, pas des erreurs — le programme compile et tourne quand
   même.
-- **`Connection refused` en te connectant à un équipement Modbus** :
-  vérifie l'IP/port, que l'équipement écoute bien en Modbus TCP (pas RTU
-  série), et qu'aucun pare-feu ne bloque le port 502.
+- **Un client ne peut pas se connecter en Modbus TCP** : vérifie que le
+  simulateur est démarré, que le port défini dans `COMM.DAT` est disponible,
+  et qu'aucun pare-feu ne bloque ce port.

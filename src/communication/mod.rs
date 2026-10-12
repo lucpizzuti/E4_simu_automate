@@ -4,3 +4,4 @@
 //! sous-module, ex: pub mod opcua;
 
 pub mod modbus;
+pub mod modbus_server;

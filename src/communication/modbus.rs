@@ -44,9 +44,9 @@ use tokio_modbus::slave::{Slave, SlaveContext};
 /// Les 4 familles d'objets Modbus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegisterKind {
-    Coil,           // 0xxxx — lecture/écriture, 1 bit
-    DiscreteInput,  // 1xxxx — lecture seule, 1 bit
-    InputRegister,  // 3xxxx — lecture seule, 16 bits
+    Coil,            // 0xxxx — lecture/écriture, 1 bit
+    DiscreteInput,   // 1xxxx — lecture seule, 1 bit
+    InputRegister,   // 3xxxx — lecture seule, 16 bits
     HoldingRegister, // 4xxxx — lecture/écriture, 16 bits
 }
 
@@ -81,7 +81,10 @@ pub fn parse_decimal_address(addr: u32) -> Result<ModbusAddress> {
         }
     };
     if addr <= base {
-        return Err(anyhow!("adresse décimale {} hors plage pour sa famille", addr));
+        return Err(anyhow!(
+            "adresse décimale {} hors plage pour sa famille",
+            addr
+        ));
     }
     let offset = (addr - base - 1) as u16;
     Ok(ModbusAddress { kind, offset })
@@ -150,7 +153,9 @@ impl ModbusClient {
         let addr = parse_decimal_address(decimal_addr)?;
         match addr.kind {
             RegisterKind::Coil => {
-                self.ctx.write_single_coil(addr.offset, value != 0).await??;
+                self.ctx
+                    .write_single_coil(addr.offset, value != 0)
+                    .await??;
             }
             RegisterKind::HoldingRegister => {
                 self.ctx.write_single_register(addr.offset, value).await??;
