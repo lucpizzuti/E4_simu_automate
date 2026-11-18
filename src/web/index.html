@@ -121,6 +121,38 @@
       margin-top: 12px;
     }
 
+    .simulation-controls,
+    .register-tools,
+    .force-controls {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 12px 0;
+    }
+
+    .simulation-controls {
+      justify-content: flex-end;
+    }
+
+    .mode-tag {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .mode-tag.forced {
+      color: var(--alarm);
+      font-weight: 700;
+    }
+
+    .force-input {
+      width: 110px;
+    }
+
+    .force-state {
+      white-space: nowrap;
+    }
+
     .flash {
       animation: flash 0.3s ease;
     }
@@ -136,12 +168,147 @@
       letter-spacing: 0.05em;
     }
 
+    .tab-bar {
+      display: flex;
+      gap: 8px;
+      margin: 16px 0 12px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .tab-button {
+      border-color: transparent;
+      border-radius: 5px 5px 0 0;
+      color: var(--muted);
+    }
+
+    .tab-button[aria-selected="true"] {
+      background: var(--panel);
+      border-color: var(--accent);
+      color: var(--text);
+    }
+
+    .tab-panel {
+      margin-top: 12px;
+    }
+
+    .state-controls {
+      display: flex;
+      align-items: end;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 16px 0;
+    }
+
+    .state-field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .state-field[hidden] {
+      display: none;
+    }
+
+    .state-field input[type="checkbox"] {
+      width: auto;
+      margin-right: 6px;
+    }
+
+    .state-field input,
+    .state-field select,
+    .register-tools input,
+    .register-tools select {
+      width: min(360px, 80vw);
+    }
+
+    .binding-indicator {
+      color: var(--accent);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .binding-release {
+      margin: 8px 0;
+    }
+
+    .state-status {
+      min-height: 1.5em;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .preview-table {
+      margin: 12px 0;
+      min-width: 700px;
+    }
+
+    .preview-wrap {
+      overflow-x: auto;
+    }
+
+    .preview-changed {
+      color: var(--alarm);
+    }
+
     .frame {
       margin: 12px 0;
       padding: 14px;
       background: var(--panel);
       border: 1px solid var(--border);
       border-radius: 8px;
+    }
+
+    .registers-editor {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+      gap: 8px;
+      margin: 12px 0;
+    }
+
+    .register-row {
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      background: var(--bg);
+    }
+
+    .register-row summary {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      cursor: pointer;
+      color: var(--text);
+      font-size: 13px;
+    }
+
+    .register-address {
+      flex: 1;
+    }
+
+    .register-value {
+      width: 100px;
+    }
+
+    .register-bits {
+      display: grid;
+      grid-template-columns: repeat(8, minmax(28px, 1fr));
+      gap: 4px;
+      margin-top: 10px;
+    }
+
+    .bit-toggle {
+      padding: 5px 2px;
+      border-color: var(--border);
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .bit-toggle[aria-pressed="true"] {
+      background: var(--accent);
+      color: #08111d;
+      font-weight: 700;
     }
 
     .frame h3 {
@@ -158,6 +325,7 @@
 
     input,
     textarea,
+    select,
     button {
       color: var(--text);
       background: var(--input);
@@ -195,6 +363,11 @@
       margin: 0 0 8px 8px;
     }
 
+    .frame label[hidden],
+    .frame-values[hidden] {
+      display: none;
+    }
+
     .variable-bindings {
       margin-top: 12px;
       padding-top: 10px;
@@ -230,42 +403,671 @@
 
 <body>
   <h1><span class="dot" id="dot"></span> Automate Simulator — Live</h1>
-  <table>
+  <div class="simulation-controls">
+    <button id="simulationToggle" type="button">Mettre en pause</button>
+    <span id="simulationStatus" class="cycle" role="status">Simulation en cours</span>
+  </div>
+  <table class="variables-table">
     <thead>
       <tr>
         <th>Variable</th>
         <th>Type</th>
         <th>Valeur</th>
+        <th>Mode</th>
+        <th>Forçage</th>
       </tr>
     </thead>
     <tbody id="rows"></tbody>
   </table>
   <div class="cycle" id="cycle">en attente de connexion…</div>
+  <div class="cycle" id="forceStatus" role="status" aria-live="polite"></div>
 
   <section class="settings">
     <h2>Configuration Modbus TCP</h2>
-    <p class="cycle">Associez les variables de simulation à leurs registres pour synchroniser les valeurs dans les deux sens. Les valeurs maximales dépendent du type de la variable liée. Les changements sont sauvegardés et actifs immédiatement.</p>
-    <form id="modbusForm">
-      <div id="frames"></div>
-      <button type="submit">Enregistrer la configuration</button>
-      <span id="saveStatus" role="status"></span>
-    </form>
+    <div class="tab-bar" role="tablist" aria-label="Configuration Modbus">
+      <button class="tab-button" id="framesTab" type="button" role="tab"
+        aria-selected="true" aria-controls="framesPanel">Frames</button>
+      <button class="tab-button" id="statesTab" type="button" role="tab"
+        aria-selected="false" aria-controls="statesPanel">États sauvegardés</button>
+    </div>
+    <section class="tab-panel" id="framesPanel" role="tabpanel" aria-labelledby="framesTab">
+      <p class="cycle">Ouvrez une adresse pour basculer ses bits (15 à 0) ou saisir sa valeur. Les changements sont sauvegardés immédiatement.</p>
+      <p class="cycle">Pour lier une variable, sélectionnez-la, indiquez l’offset du premier registre dans la frame, puis cliquez sur « Lier la variable ». BOOL et les valeurs 16 bits utilisent un registre; UINT32 et DWORD en utilisent deux, poids fort en premier. La liaison synchronise variable et registre; la simulation peut recalculer la variable à chaque cycle.</p>
+      <div class="register-tools">
+        <label class="state-field" for="registerSearch">Rechercher une frame ou une adresse
+          <input id="registerSearch" type="search" placeholder="Nom ou adresse de registre" />
+        </label>
+        <label class="state-field" for="valueFormat">Format des valeurs
+          <select id="valueFormat">
+            <option value="decimal">Décimal</option>
+            <option value="hex">Hexadécimal</option>
+          </select>
+        </label>
+        <span class="cycle" id="searchStatus" role="status"></span>
+      </div>
+      <form id="modbusForm">
+        <div id="frames"></div>
+        <button type="submit">Enregistrer la configuration</button>
+        <span id="saveStatus" role="status"></span>
+      </form>
+    </section>
+    <section class="tab-panel" id="statesPanel" role="tabpanel" aria-labelledby="statesTab" hidden>
+      <p class="cycle">Un état mémorise toutes les frames : adresses, valeurs des registres, tailles et liaisons de variables. Les différences sont affichées avant application, qui nécessite une confirmation. Un nom déjà utilisé est remplacé lors de l’enregistrement ou de l’import.</p>
+      <div class="state-controls">
+        <label class="state-field" for="presetName">Nom de l’état
+          <input id="presetName" maxlength="60" autocomplete="off" placeholder="Ex. Démarrage" />
+        </label>
+        <button id="savePreset" type="button">Enregistrer l’état actuel</button>
+        <label class="state-field" for="presetFile">Importer un fichier JSON
+          <input id="presetFile" type="file" accept=".json,application/json" />
+        </label>
+        <button id="importPreset" type="button">Importer</button>
+      </div>
+      <label class="state-field" for="presetSelect">État à sélectionner
+        <select id="presetSelect"></select>
+      </label>
+      <div id="presetPreview" hidden>
+        <p class="cycle" id="presetPreviewSummary"></p>
+        <div class="preview-wrap">
+          <table class="preview-table">
+            <thead>
+              <tr><th>Frame</th><th>Adresse</th><th>Registres</th><th>Liaisons</th></tr>
+            </thead>
+            <tbody id="presetPreviewRows"></tbody>
+          </table>
+        </div>
+        <label id="applyConfirmLabel" class="state-field" hidden>
+          <span><input id="applyConfirm" type="checkbox" /> J’ai vérifié ces différences et veux remplacer la configuration active.</span>
+        </label>
+      </div>
+      <div class="state-controls">
+        <button id="applyPreset" type="button" disabled>Appliquer à toutes les frames</button>
+        <button id="exportPreset" type="button" disabled>Exporter l’état</button>
+        <button id="deletePreset" type="button" disabled>Supprimer l’état</button>
+      </div>
+      <p class="state-status" id="presetStatus" role="status" aria-live="polite"></p>
+    </section>
   </section>
 
   <script>
     const dot = document.getElementById('dot');
     const rows = document.getElementById('rows');
     const cycleEl = document.getElementById('cycle');
+    const simulationToggle = document.getElementById('simulationToggle');
+    const simulationStatus = document.getElementById('simulationStatus');
+    const forceStatus = document.getElementById('forceStatus');
     const framesEl = document.getElementById('frames');
     const saveStatus = document.getElementById('saveStatus');
+    const presetName = document.getElementById('presetName');
+    const presetSelect = document.getElementById('presetSelect');
+    const presetFile = document.getElementById('presetFile');
+    const presetStatus = document.getElementById('presetStatus');
+    const presetPreview = document.getElementById('presetPreview');
+    const presetPreviewRows = document.getElementById('presetPreviewRows');
+    const presetPreviewSummary = document.getElementById('presetPreviewSummary');
+    const applyConfirm = document.getElementById('applyConfirm');
+    const registerSearch = document.getElementById('registerSearch');
+    const valueFormat = document.getElementById('valueFormat');
+    const searchStatus = document.getElementById('searchStatus');
     const rowEls = {};
     let variablesByName = {};
+    let simulationPaused = false;
+    let registerRadix = 10;
+    let presetHasChanges = false;
+
+    function updateSimulationControls(paused) {
+      simulationPaused = paused;
+      simulationToggle.textContent = paused ? 'Reprendre la simulation' : 'Mettre en pause';
+      simulationToggle.setAttribute('aria-pressed', String(paused));
+      simulationStatus.textContent = paused
+        ? 'Simulation en pause — les valeurs forcées restent actives'
+        : 'Simulation en cours';
+    }
+
+    async function loadSimulationControl() {
+      const response = await fetch('/api/simulation');
+      if (!response.ok) throw new Error(await response.text());
+      const state = await response.json();
+      updateSimulationControls(state.paused);
+      const forced = new Set(state.forced_variables);
+      for (const name of Object.keys(rowEls)) updateForcedStatus(name, forced.has(name));
+    }
+
+    async function toggleSimulation() {
+      simulationToggle.disabled = true;
+      const paused = !simulationPaused;
+      try {
+        const response = await fetch('/api/simulation', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ paused }),
+        });
+        if (!response.ok) throw new Error(await response.text());
+        updateSimulationControls(paused);
+      } catch (error) {
+        simulationStatus.textContent = `Erreur : ${error.message}`;
+      } finally {
+        simulationToggle.disabled = false;
+      }
+    }
+
+    function parseForcedValue(type, input) {
+      if (type === 'BOOL') return input.value === 'true';
+      const value = Number(input.value);
+      const ranges = {
+        INT16: [-32768, 32767],
+        UINT16: [0, 65535],
+        WORD: [0, 65535],
+        UINT32: [0, 4294967295],
+        DWORD: [0, 4294967295],
+      };
+      const range = ranges[type];
+      if (!range || input.value.trim() === '' || !Number.isSafeInteger(value)
+        || value < range[0] || value > range[1]) {
+        throw new Error(`Valeur invalide pour ${type}.`);
+      }
+      return value;
+    }
+
+    async function forceVariable(name, type, input) {
+      try {
+        const response = await fetch('/api/variables/force', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, value: parseForcedValue(type, input) }),
+        });
+        if (!response.ok) throw new Error(await response.text());
+        updateForcedStatus(name, true);
+        forceStatus.textContent = `${name} est forcée jusqu’à sa libération.`;
+      } catch (error) {
+        forceStatus.textContent = `Erreur : ${error.message}`;
+      }
+    }
+
+    async function releaseVariable(name) {
+      try {
+        const response = await fetch('/api/variables/force', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }),
+        });
+        if (!response.ok) throw new Error(await response.text());
+        updateForcedStatus(name, false);
+        forceStatus.textContent = `${name} est de nouveau pilotée par la simulation.`;
+      } catch (error) {
+        forceStatus.textContent = `Erreur : ${error.message}`;
+      }
+    }
+
+    simulationToggle.addEventListener('click', toggleSimulation);
+
+    function showTab(showStates) {
+      document.getElementById('framesTab').setAttribute('aria-selected', String(!showStates));
+      document.getElementById('statesTab').setAttribute('aria-selected', String(showStates));
+      document.getElementById('framesPanel').hidden = showStates;
+      document.getElementById('statesPanel').hidden = !showStates;
+    }
+
+    async function loadPresets(selectedName = presetSelect.value) {
+      const response = await fetch('/api/modbus/presets');
+      if (!response.ok) throw new Error(await response.text());
+      const { presets } = await response.json();
+      presetSelect.replaceChildren();
+      if (presets.length === 0) {
+        const option = document.createElement('option');
+        option.value = '';
+        option.textContent = 'Aucun état enregistré';
+        presetSelect.appendChild(option);
+        presetStatus.textContent = 'Enregistre un état pour pouvoir le sélectionner ici.';
+      } else {
+        for (const name of presets) {
+          const option = document.createElement('option');
+          option.value = name;
+          option.textContent = name;
+          presetSelect.appendChild(option);
+        }
+        presetSelect.value = presets.includes(selectedName) ? selectedName : presets[0];
+        presetStatus.textContent = `${presets.length} état(s) enregistré(s).`;
+      }
+      const hasSelection = presets.length > 0;
+      document.getElementById('applyPreset').disabled = !hasSelection;
+      document.getElementById('exportPreset').disabled = !hasSelection;
+      document.getElementById('deletePreset').disabled = !hasSelection;
+      await previewPreset();
+    }
+
+    function bindingSummary(bindings) {
+      return bindings.length
+        ? bindings.map((binding) => `${binding.variable}@${binding.offset}`).sort().join(', ')
+        : 'Aucune';
+    }
+
+    async function previewPreset() {
+      const name = presetSelect.value;
+      applyConfirm.checked = false;
+      presetHasChanges = false;
+      document.getElementById('applyConfirmLabel').hidden = true;
+      document.getElementById('applyPreset').disabled = true;
+      presetPreviewRows.replaceChildren();
+      if (!name) {
+        presetPreview.hidden = true;
+        return;
+      }
+
+      presetPreview.hidden = false;
+      presetPreviewSummary.textContent = 'Comparaison de l’état avec les frames actives…';
+      try {
+        const [currentResponse, presetResponse] = await Promise.all([
+          fetch('/api/modbus'),
+          fetch('/api/modbus/presets/preview', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name }),
+          }),
+        ]);
+        if (!currentResponse.ok) throw new Error(await currentResponse.text());
+        if (!presetResponse.ok) throw new Error(await presetResponse.text());
+        const current = await currentResponse.json();
+        const preset = await presetResponse.json();
+        if (presetSelect.value !== name) return;
+
+        const currentByName = new Map(current.frames.map((frame) => [frame.name, frame]));
+        const changedFrames = [];
+        for (const target of preset.frames) {
+          const active = currentByName.get(target.name);
+          if (!active) {
+            changedFrames.push({ target, active: null });
+            continue;
+          }
+          const changedRegisters = [];
+          for (let offset = 0; offset < Math.max(active.values.length, target.values.length); offset++) {
+            if (active.values[offset] !== target.values[offset]) {
+              changedRegisters.push(
+                `#${offset} ${active.values[offset] ?? '—'} → ${target.values[offset] ?? '—'}`
+              );
+            }
+          }
+          const bindingsChanged = bindingSummary(active.bindings || []) !== bindingSummary(target.bindings || []);
+          if (active.address !== target.address || changedRegisters.length
+            || active.values.length !== target.values.length || bindingsChanged) {
+            changedFrames.push({ target, active, changedRegisters, bindingsChanged });
+          }
+        }
+
+        presetHasChanges = changedFrames.length > 0;
+        if (!presetHasChanges) {
+          presetPreviewSummary.textContent = 'Cet état correspond déjà à la configuration active.';
+          const row = document.createElement('tr');
+          const cell = document.createElement('td');
+          cell.colSpan = 4;
+          cell.textContent = 'Aucune différence.';
+          row.appendChild(cell);
+          presetPreviewRows.appendChild(row);
+          return;
+        }
+
+        presetPreviewSummary.textContent =
+          `${changedFrames.length} frame(s) différente(s) — vérifie avant de remplacer la configuration active.`;
+        for (const { target, active, changedRegisters = [], bindingsChanged } of changedFrames) {
+          const row = document.createElement('tr');
+          row.className = 'preview-changed';
+          const frameCell = document.createElement('td');
+          frameCell.textContent = target.name;
+          const addressCell = document.createElement('td');
+          addressCell.textContent = active
+            ? `${active.address} → ${target.address}`
+            : `— → ${target.address}`;
+          const registersCell = document.createElement('td');
+          const registerChanges = changedRegisters.slice(0, 3).join('; ');
+          const remaining = changedRegisters.length > 3 ? `; +${changedRegisters.length - 3}` : '';
+          registersCell.textContent =
+            `${active?.values.length ?? 0} → ${target.values.length}` +
+            (changedRegisters.length ? ` — ${registerChanges}${remaining}` : '');
+          const bindingsCell = document.createElement('td');
+          bindingsCell.textContent = bindingsChanged
+            ? `${bindingSummary(active?.bindings || [])} → ${bindingSummary(target.bindings || [])}`
+            : bindingSummary(target.bindings || []);
+          row.append(frameCell, addressCell, registersCell, bindingsCell);
+          presetPreviewRows.appendChild(row);
+        }
+        document.getElementById('applyConfirmLabel').hidden = false;
+        document.getElementById('applyPreset').disabled = true;
+      } catch (error) {
+        if (presetSelect.value !== name) return;
+        presetPreviewSummary.textContent = `Comparaison impossible : ${error.message}`;
+        presetPreviewRows.replaceChildren();
+      }
+    }
+
+    async function savePreset() {
+      const name = presetName.value.trim();
+      if (!name || name.length > 60) {
+        presetStatus.textContent = 'Saisissez un nom de 1 à 60 caractères.';
+        return;
+      }
+      presetStatus.textContent = 'Enregistrement de l’état…';
+      try {
+        if (savePromise) await savePromise;
+        const response = await fetch('/api/modbus/presets', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }),
+        });
+        if (!response.ok) throw new Error(await response.text());
+        await loadPresets(name);
+        presetStatus.textContent = `État « ${name} » enregistré.`;
+      } catch (error) {
+        presetStatus.textContent = `Erreur : ${error.message}`;
+      }
+    }
+
+    async function applyPreset() {
+      const name = presetSelect.value;
+      if (!name || !presetHasChanges || !applyConfirm.checked) return;
+      presetStatus.textContent = 'Application à toutes les frames…';
+      try {
+        if (savePromise) await savePromise;
+        const response = await fetch('/api/modbus/presets/apply', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }),
+        });
+        if (!response.ok) throw new Error(await response.text());
+        await loadModbusConfig();
+        await previewPreset();
+        presetStatus.textContent = `État « ${name} » appliqué à toutes les frames.`;
+      } catch (error) {
+        presetStatus.textContent = `Erreur : ${error.message}`;
+      }
+    }
+
+    async function deletePreset() {
+      const name = presetSelect.value;
+      if (!name) return;
+      presetStatus.textContent = 'Suppression de l’état…';
+      try {
+        const response = await fetch('/api/modbus/presets', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }),
+        });
+        if (!response.ok) throw new Error(await response.text());
+        await loadPresets();
+        presetStatus.textContent = `État « ${name} » supprimé.`;
+      } catch (error) {
+        presetStatus.textContent = `Erreur : ${error.message}`;
+      }
+    }
+
+    async function exportPreset() {
+      const name = presetSelect.value;
+      if (!name) return;
+      try {
+        const response = await fetch('/api/modbus/presets/preview', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }),
+        });
+        if (!response.ok) throw new Error(await response.text());
+        const saved = await response.json();
+        const contents = JSON.stringify({
+          format: 'automate-frame-state',
+          version: 1,
+          name: saved.name,
+          frames: saved.frames,
+        }, null, 2);
+        const url = URL.createObjectURL(new Blob([contents], { type: 'application/json' }));
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `${name.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_')}.json`;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        presetStatus.textContent = `État « ${name} » exporté.`;
+      } catch (error) {
+        presetStatus.textContent = `Erreur d’export : ${error.message}`;
+      }
+    }
+
+    async function importPreset() {
+      const file = presetFile.files[0];
+      if (!file) {
+        presetStatus.textContent = 'Choisis d’abord un fichier JSON.';
+        return;
+      }
+      try {
+        const imported = JSON.parse(await file.text());
+        if (imported.format !== 'automate-frame-state' || imported.version !== 1
+          || !Array.isArray(imported.frames)) {
+          throw new Error('Fichier invalide ou version non prise en charge.');
+        }
+        const name = presetName.value.trim() || imported.name;
+        if (typeof name !== 'string' || !name.trim() || name.length > 60) {
+          throw new Error('Le nom doit contenir entre 1 et 60 caractères.');
+        }
+        const response = await fetch('/api/modbus/presets/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...imported, name: name.trim() }),
+        });
+        if (!response.ok) throw new Error(await response.text());
+        presetName.value = name.trim();
+        presetFile.value = '';
+        await loadPresets(name.trim());
+        presetStatus.textContent = `État « ${name.trim()} » importé.`;
+      } catch (error) {
+        presetStatus.textContent = `Erreur d’import : ${error.message}`;
+      }
+    }
+
+    document.getElementById('framesTab').addEventListener('click', () => showTab(false));
+    document.getElementById('statesTab').addEventListener('click', () => showTab(true));
+    document.getElementById('savePreset').addEventListener('click', savePreset);
+    document.getElementById('applyPreset').addEventListener('click', applyPreset);
+    document.getElementById('deletePreset').addEventListener('click', deletePreset);
+    document.getElementById('exportPreset').addEventListener('click', exportPreset);
+    document.getElementById('importPreset').addEventListener('click', importPreset);
+    presetSelect.addEventListener('change', () => {
+      document.getElementById('exportPreset').disabled = !presetSelect.value;
+      document.getElementById('deletePreset').disabled = !presetSelect.value;
+      previewPreset();
+    });
+    applyConfirm.addEventListener('change', () => {
+      document.getElementById('applyPreset').disabled = !presetHasChanges || !applyConfirm.checked;
+    });
+
+    function formatRegisterValue(value) {
+      return registerRadix === 16
+        ? `0x${value.toString(16).toUpperCase().padStart(4, '0')}`
+        : String(value);
+    }
+
+    function parseRegisterValue(input) {
+      const text = input.trim();
+      if (registerRadix === 16) {
+        const digits = text.replace(/^0x/i, '');
+        if (!/^[\da-f]{1,4}$/i.test(digits)) return null;
+        return Number.parseInt(digits, 16);
+      }
+      if (!/^\d{1,5}$/.test(text)) return null;
+      const value = Number(text);
+      return value <= 65535 ? value : null;
+    }
+
+    function registerBindingWidth(variable) {
+      return ['UINT32', 'DWORD'].includes(variablesByName[variable]?.type) ? 2 : 1;
+    }
+
+    function updateBindingIndicator(details, section, offset) {
+      const binding = (section._bindings || []).find((item) => {
+        return item.offset <= offset && offset < item.offset + registerBindingWidth(item.variable);
+      });
+      const indicator = details.querySelector('.binding-indicator');
+      const unlink = details.querySelector('.binding-release');
+      indicator.hidden = !binding;
+      unlink.hidden = !binding || binding.offset !== offset;
+      if (binding) {
+        const width = registerBindingWidth(binding.variable);
+        const word = offset === binding.offset ? '' : ` (mot ${offset - binding.offset + 1}/${width})`;
+        indicator.textContent = `Lié : ${binding.variable}${word}`;
+        unlink.textContent = `Délier ${binding.variable}`;
+      }
+    }
+
+    function syncRegisterEditor(section, rebuild = false) {
+      const editor = section.querySelector('.registers-editor');
+      const values = section.querySelector('.frame-values').value
+        .split(',').map((value) => Number(value.trim()));
+      const address = Number(section.querySelector('.frame-address').value);
+      if (rebuild || editor.children.length !== values.length) {
+        editor.replaceChildren();
+        values.forEach((value, offset) => {
+          const details = document.createElement('details');
+          details.className = 'register-row';
+
+          const summary = document.createElement('summary');
+          const addressLabel = document.createElement('span');
+          addressLabel.className = 'register-address';
+          addressLabel.textContent = `Registre ${address + offset} (offset ${offset})`;
+          const bindingIndicator = document.createElement('span');
+          bindingIndicator.className = 'binding-indicator';
+          const summaryValue = document.createElement('strong');
+          summaryValue.className = 'register-summary-value';
+          summary.append(addressLabel, bindingIndicator, summaryValue);
+          details.appendChild(summary);
+
+          const input = document.createElement('input');
+          input.type = 'text';
+          input.inputMode = 'text';
+          input.className = 'register-value';
+          input.setAttribute('aria-label', `Valeur du registre ${address + offset}`);
+          details.appendChild(input);
+
+          const unlink = document.createElement('button');
+          unlink.type = 'button';
+          unlink.className = 'binding-release';
+          unlink.addEventListener('click', async () => {
+            const binding = (section._bindings || []).find((item) => item.offset === offset);
+            if (!binding) return;
+            section._bindings = section._bindings.filter((item) => item !== binding);
+            refreshFrameBindings();
+            await saveModbusConfig();
+          });
+          details.appendChild(unlink);
+
+          const bits = document.createElement('div');
+          bits.className = 'register-bits';
+          for (let bit = 15; bit >= 0; bit--) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'bit-toggle';
+            button.textContent = String(bit);
+            button.title = `Basculer le bit ${bit} du registre ${address + offset}`;
+            button.setAttribute('aria-label', `Basculer le bit ${bit} du registre ${address + offset}`);
+            button.addEventListener('click', async () => {
+              const nextValue = Number(input.value) ^ (1 << bit);
+              input.value = formatRegisterValue(nextValue);
+              writeRegisterValue(section, offset, nextValue);
+              updateRegisterValue(details, nextValue);
+              await saveModbusConfig();
+            });
+            bits.appendChild(button);
+          }
+          details.appendChild(bits);
+
+          input.addEventListener('input', () => {
+            const nextValue = parseRegisterValue(input.value);
+            if (nextValue !== null) {
+              writeRegisterValue(section, offset, nextValue);
+              updateRegisterValue(details, nextValue, false);
+            }
+          });
+          input.addEventListener('change', async () => {
+            const nextValue = parseRegisterValue(input.value);
+            if (nextValue === null) {
+              saveStatus.textContent = registerRadix === 16
+                ? 'Saisissez une valeur hexadécimale de 0x0000 à 0xFFFF.'
+                : 'Saisissez un entier compris entre 0 et 65535.';
+              syncRegisterEditor(section);
+              return;
+            }
+            await saveModbusConfig();
+          });
+          editor.appendChild(details);
+          updateRegisterValue(details, value);
+          updateBindingIndicator(details, section, offset);
+        });
+      } else {
+        [...editor.children].forEach((details, offset) => {
+          const addressLabel = details.querySelector('.register-address');
+          addressLabel.textContent = `Registre ${address + offset} (offset ${offset})`;
+          details.querySelector('.register-value').setAttribute(
+            'aria-label', `Valeur du registre ${address + offset}`
+          );
+          details.querySelectorAll('.bit-toggle').forEach((button, index) => {
+            const bit = 15 - index;
+            button.title = `Basculer le bit ${bit} du registre ${address + offset}`;
+            button.setAttribute('aria-label', `Basculer le bit ${bit} du registre ${address + offset}`);
+          });
+          updateRegisterValue(details, values[offset]);
+          updateBindingIndicator(details, section, offset);
+        });
+      }
+    }
+
+    function updateRegisterValue(details, value, updateInput = true) {
+      if (updateInput) details.querySelector('.register-value').value = formatRegisterValue(value);
+      details.querySelector('.register-summary-value').textContent = formatRegisterValue(value);
+      details.querySelectorAll('.bit-toggle').forEach((button, index) => {
+        const bit = 15 - index;
+        button.setAttribute('aria-pressed', String((value & (1 << bit)) !== 0));
+      });
+    }
+
+    function writeRegisterValue(section, offset, value) {
+      const values = section.querySelector('.frame-values').value
+        .split(',').map((entry) => Number(entry.trim()));
+      values[offset] = value;
+      section.querySelector('.frame-values').value = values.join(', ');
+    }
+
+    function refreshFrameBindings() {
+      for (const section of framesEl.querySelectorAll('.frame')) {
+        if (typeof section._renderBindings === 'function') section._renderBindings();
+        syncRegisterEditor(section);
+      }
+    }
+
+    function filterRegisterCards() {
+      const query = registerSearch.value.trim().toLowerCase();
+      let visibleRegisters = 0;
+      for (const section of framesEl.querySelectorAll('.frame')) {
+        const nameMatches = section.dataset.name.toLowerCase().includes(query);
+        let visibleInFrame = 0;
+        for (const register of section.querySelectorAll('.register-row')) {
+          const addressMatches = register.querySelector('.register-address').textContent.toLowerCase().includes(query);
+          register.hidden = Boolean(query) && !nameMatches && !addressMatches;
+          if (!register.hidden) visibleInFrame++;
+        }
+        section.hidden = Boolean(query) && !nameMatches && visibleInFrame === 0;
+        visibleRegisters += section.hidden ? 0 : visibleInFrame;
+      }
+      searchStatus.textContent = query
+        ? `${visibleRegisters} registre(s) correspondant(s).`
+        : '';
+    }
+
+    registerSearch.addEventListener('input', filterRegisterCards);
+    valueFormat.addEventListener('change', () => {
+      registerRadix = valueFormat.value === 'hex' ? 16 : 10;
+      for (const section of framesEl.querySelectorAll('.frame')) syncRegisterEditor(section);
+    });
 
     async function loadModbusConfig() {
       const response = await fetch('/api/modbus');
       if (!response.ok) throw new Error(await response.text());
       const config = await response.json();
       variablesByName = Object.fromEntries(config.variables.map((variable) => [variable.name, variable]));
+      for (const variable of config.variables) updateVariableRow({ ...variable, forced: false });
       framesEl.replaceChildren();
       for (const frame of config.frames) {
         const section = document.createElement('section');
@@ -306,6 +1108,7 @@
           const values = section.querySelector('.frame-values');
           const maxima = maximumValues();
           values.value = (isAtMaximum() ? maxima.map(() => 0) : maxima).join(', ');
+          syncRegisterEditor(section);
           await saveModbusConfig();
         });
         section.appendChild(toggle);
@@ -325,6 +1128,9 @@
           values.value = `${values.value.trim().replace(/,\s*$/, '')}, 0`;
           section.dataset.count = count + 1;
           title.textContent = `${section.dataset.name} — ${count + 1} registres${frame.read_only ? ' (lecture seule côté Modbus)' : ''}`;
+          updateBindingRange();
+          syncRegisterEditor(section, true);
+          filterRegisterCards();
           await saveModbusConfig();
         });
         section.appendChild(addRegister);
@@ -360,6 +1166,9 @@
           values.value = entries.join(', ');
           section.dataset.count = count - 1;
           title.textContent = `${section.dataset.name} — ${count - 1} registres${frame.read_only ? ' (lecture seule côté Modbus)' : ''}`;
+          updateBindingRange();
+          syncRegisterEditor(section, true);
+          filterRegisterCards();
           await saveModbusConfig();
         });
         section.appendChild(removeRegister);
@@ -384,7 +1193,7 @@
         const bindingOffset = document.createElement('input');
         bindingOffset.type = 'number';
         bindingOffset.min = '0';
-        bindingOffset.max = String(frame.values.length - 1);
+        bindingOffset.max = String(Math.max(0, frame.values.length - 1));
         bindingOffset.value = '0';
         bindingOffset.className = 'binding-offset';
         bindingOffset.title = 'Offset du registre dans cette frame';
@@ -392,6 +1201,14 @@
         const bindButton = document.createElement('button');
         bindButton.type = 'button';
         bindButton.textContent = 'Lier la variable';
+        const updateBindingRange = () => {
+          const width = registerBindingWidth(variableSelect.value);
+          const maxOffset = Number(section.dataset.count) - width;
+          bindingOffset.max = String(Math.max(0, maxOffset));
+          bindButton.disabled = maxOffset < 0;
+        };
+        variableSelect.addEventListener('change', updateBindingRange);
+        updateBindingRange();
         bindButton.addEventListener('click', async () => {
           const variable = variableSelect.value;
           const offset = Number(bindingOffset.value);
@@ -403,8 +1220,13 @@
             saveStatus.textContent = `${variable} est déjà liée à un registre.`;
             return;
           }
+          const width = registerBindingWidth(variable);
+          if (!Number.isInteger(offset) || offset < 0 || offset + width > Number(section.dataset.count)) {
+            saveStatus.textContent = `${variable} nécessite ${width} registre(s) à partir d’un offset valide.`;
+            return;
+          }
           section._bindings.push({ variable, offset });
-          renderBindings();
+          refreshFrameBindings();
           await saveModbusConfig();
         });
         bindingsSection.appendChild(bindButton);
@@ -424,7 +1246,7 @@
             remove.textContent = 'Délier';
             remove.addEventListener('click', async () => {
               section._bindings = section._bindings.filter((item) => item.variable !== binding.variable);
-              renderBindings();
+              refreshFrameBindings();
               await saveModbusConfig();
             });
             row.appendChild(remove);
@@ -439,6 +1261,7 @@
             option.disabled = mappedNames.has(option.value) && !section._bindings.some((item) => item.variable === option.value);
           }
         }
+        section._renderBindings = renderBindings;
         renderBindings();
 
         const addressLabel = document.createElement('label');
@@ -460,14 +1283,44 @@
         values.spellcheck = false;
         values.value = frame.values.join(', ');
         values.className = 'frame-values';
+        values.hidden = true;
+        valuesLabel.hidden = true;
         valuesLabel.appendChild(values);
         section.appendChild(valuesLabel);
+        const registersEditor = document.createElement('div');
+        registersEditor.className = 'registers-editor';
+        registersEditor.setAttribute('aria-label', `Registres de ${frame.name}`);
+        section.appendChild(registersEditor);
+        syncRegisterEditor(section, true);
         toggle.textContent = isAtMaximum() ? 'Tout mettre à 0' : 'Tout mettre au maximum';
         framesEl.appendChild(section);
       }
+      refreshFrameBindings();
+      filterRegisterCards();
     }
 
+    let savePromise = null;
+    let savePending = false;
+
     async function saveModbusConfig() {
+      if (savePromise) {
+        savePending = true;
+        return savePromise;
+      }
+      savePromise = (async () => {
+        do {
+          savePending = false;
+          await persistModbusConfig();
+        } while (savePending);
+      })();
+      try {
+        await savePromise;
+      } finally {
+        savePromise = null;
+      }
+    }
+
+    async function persistModbusConfig() {
       saveStatus.textContent = 'Enregistrement…';
       try {
         const frames = [...framesEl.querySelectorAll('.frame')].map((section) => {
@@ -497,10 +1350,12 @@
           body: JSON.stringify({ frames }),
         });
         if (!response.ok) throw new Error(await response.text());
+        if (savePending) return;
         saveStatus.textContent = 'Configuration enregistrée.';
         const refreshedResponse = await fetch('/api/modbus');
         if (!refreshedResponse.ok) throw new Error(await refreshedResponse.text());
         const refreshed = await refreshedResponse.json();
+        if (savePending) return;
         for (const section of framesEl.querySelectorAll('.frame')) {
           const savedFrame = refreshed.frames.find((frame) => frame.name === section.dataset.name);
           if (savedFrame) {
@@ -512,6 +1367,7 @@
             .map((value) => value.trim())
             .filter((value) => value !== '');
           section.dataset.count = currentValues.length;
+          syncRegisterEditor(section);
           const minimum = Number(section.dataset.minimum);
           const removeRegister = section.querySelector('.frame-remove-register');
           removeRegister.disabled = currentValues.length <= minimum;
@@ -543,6 +1399,91 @@
       await saveModbusConfig();
     });
 
+    function createVariableRow(variable) {
+      const tr = document.createElement('tr');
+      const name = document.createElement('td');
+      name.textContent = variable.name;
+      const type = document.createElement('td');
+      type.className = 'type-tag';
+      type.textContent = variable.type;
+      const value = document.createElement('td');
+      value.className = 'val';
+      const mode = document.createElement('td');
+      mode.className = 'mode-tag force-state';
+      const controls = document.createElement('td');
+      controls.className = 'force-controls';
+
+      let input;
+      if (variable.type === 'BOOL') {
+        input = document.createElement('select');
+        for (const optionValue of ['false', 'true']) {
+          const option = document.createElement('option');
+          option.value = optionValue;
+          option.textContent = optionValue.toUpperCase();
+          input.appendChild(option);
+        }
+      } else {
+        input = document.createElement('input');
+        input.type = 'number';
+        input.step = '1';
+        const ranges = {
+          INT16: [-32768, 32767],
+          UINT16: [0, 65535],
+          WORD: [0, 65535],
+          UINT32: [0, 4294967295],
+          DWORD: [0, 4294967295],
+        };
+        if (ranges[variable.type]) {
+          input.min = String(ranges[variable.type][0]);
+          input.max = String(ranges[variable.type][1]);
+        }
+      }
+      input.className = 'force-input';
+      input.setAttribute('aria-label', `Valeur à forcer pour ${variable.name}`);
+      const forceButton = document.createElement('button');
+      forceButton.type = 'button';
+      forceButton.textContent = 'Forcer';
+      forceButton.addEventListener('click', () => forceVariable(variable.name, variable.type, input));
+      const releaseButton = document.createElement('button');
+      releaseButton.type = 'button';
+      releaseButton.textContent = 'Libérer';
+      releaseButton.disabled = true;
+      releaseButton.addEventListener('click', () => releaseVariable(variable.name));
+      controls.append(input, forceButton, releaseButton);
+      tr.append(name, type, value, mode, controls);
+      rows.appendChild(tr);
+      rowEls[variable.name] = tr;
+      return tr;
+    }
+
+    function updateVariableRow(variable) {
+      const tr = rowEls[variable.name] || createVariableRow(variable);
+      const value = tr.querySelector('.val');
+      const display = typeof variable.value === 'boolean'
+        ? (variable.value ? 'TRUE' : 'FALSE')
+        : variable.value;
+      if (value.textContent !== String(display)) {
+        value.classList.remove('flash');
+        void value.offsetWidth;
+        value.classList.add('flash');
+      }
+      value.textContent = display;
+      value.className = 'val flash ' + (typeof variable.value === 'boolean' ? String(variable.value) : '');
+      updateForcedStatus(variable.name, Boolean(variable.forced));
+      const controls = tr.querySelector('.force-controls');
+      const input = controls.querySelector('.force-input');
+      if (document.activeElement !== input) input.value = String(variable.value);
+    }
+
+    function updateForcedStatus(name, forced) {
+      const tr = rowEls[name];
+      if (!tr) return;
+      const mode = tr.querySelector('.force-state');
+      mode.textContent = forced ? 'Forcée' : 'Automate';
+      mode.classList.toggle('forced', forced);
+      tr.querySelector('.force-controls').querySelectorAll('button')[1].disabled = !forced;
+    }
+
     function connect() {
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
       const ws = new WebSocket(`${proto}://${location.host}/ws`);
@@ -556,36 +1497,23 @@
 
       ws.onmessage = (event) => {
         // `state` correspond exactement à ce que state_json() construit
-        // côté Rust dans main.rs : { cycle: n, variables: [{name,type,value}] }
+        // côté Rust dans main.rs : { cycle, paused, variables: [{name,type,value,forced}] }
         const state = JSON.parse(event.data);
         cycleEl.textContent = `cycle ${state.cycle}`;
+        updateSimulationControls(state.paused);
 
-        // ➜ Cette boucle affiche AUTOMATIQUEMENT toute variable présente
-        // dans la mémoire de l'automate — pas besoin de la modifier quand
-        // tu ajoutes une variable dans main.rs.
-        for (const v of state.variables) {
-          let tr = rowEls[v.name];
-          if (!tr) {
-            tr = document.createElement('tr');
-            tr.innerHTML = `<td>${v.name}</td><td class="type-tag">${v.type}</td><td class="val" id="val-${v.name}"></td>`;
-            rows.appendChild(tr);
-            rowEls[v.name] = tr;
-          }
-          const valEl = tr.querySelector('.val');
-          const display = typeof v.value === 'boolean' ? (v.value ? 'TRUE' : 'FALSE') : v.value;
-          if (valEl.textContent !== String(display)) {
-            valEl.classList.remove('flash');
-            void valEl.offsetWidth; // reset animation
-            valEl.classList.add('flash');
-          }
-          valEl.textContent = display;
-          valEl.className = 'val flash ' + (typeof v.value === 'boolean' ? String(v.value) : '');
-        }
+        for (const variable of state.variables) updateVariableRow(variable);
       };
     }
 
     loadModbusConfig().catch((error) => {
       saveStatus.textContent = `Erreur de chargement : ${error.message}`;
+    });
+    loadPresets().catch((error) => {
+      presetStatus.textContent = `Erreur de chargement des états : ${error.message}`;
+    });
+    loadSimulationControl().catch((error) => {
+      simulationStatus.textContent = `Erreur de chargement : ${error.message}`;
     });
     connect();
   </script>

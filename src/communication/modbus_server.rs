@@ -40,10 +40,26 @@ pub struct FrameUpdate {
     pub bindings: Vec<VariableBinding>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct FramePreset {
+    name: String,
+    frames: Vec<FrameUpdate>,
+}
+
+fn validate_preset_name(name: &str) -> Result<&str> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 60 {
+        bail!("le nom de l’état doit contenir entre 1 et 60 caractères");
+    }
+    Ok(name)
+}
+
 #[derive(Clone)]
 pub struct ModbusState {
     frames: Arc<RwLock<Vec<ModbusFrame>>>,
     config_path: Arc<PathBuf>,
+    presets_path: Arc<PathBuf>,
+    presets: Arc<RwLock<Vec<FramePreset>>>,
     memory: Arc<RwLock<Memory>>,
 }
 
@@ -73,12 +89,24 @@ impl ModbusState {
             })?;
             frames = restore_saved_updates(&frames, updates, &memory)?;
         }
+        let presets_path = config_path.with_extension("presets.json");
+        let presets = if presets_path.exists() {
+            let saved = fs::read(&presets_path)
+                .with_context(|| format!("impossible de lire {}", presets_path.display()))?;
+            serde_json::from_slice(&saved).with_context(|| {
+                format!("configuration invalide dans {}", presets_path.display())
+            })?
+        } else {
+            Vec::new()
+        };
         sync_frame_bindings_to_memory(&frames, &memory)?;
 
         Ok((
             Self {
                 frames: Arc::new(RwLock::new(frames)),
                 config_path: Arc::new(config_path.to_path_buf()),
+                presets_path: Arc::new(presets_path),
+                presets: Arc::new(RwLock::new(presets)),
                 memory,
             },
             port,
@@ -90,6 +118,117 @@ impl ModbusState {
             .read()
             .map(|frames| frames.clone())
             .map_err(|_| anyhow!("verrou de configuration Modbus indisponible"))
+    }
+
+    pub fn preset_names(&self) -> Result<Vec<String>> {
+        self.presets
+            .read()
+            .map(|presets| presets.iter().map(|preset| preset.name.clone()).collect())
+            .map_err(|_| anyhow!("verrou des états de frames indisponible"))
+    }
+
+    pub fn save_preset(&self, name: &str) -> std::result::Result<(), UpdateError> {
+        let name =
+            validate_preset_name(name).map_err(|error| UpdateError::Invalid(error.to_string()))?;
+        let frames = self
+            .frames
+            .read()
+            .map_err(|_| UpdateError::LockPoisoned)?
+            .iter()
+            .cloned()
+            .map(|frame| FrameUpdate {
+                name: frame.name,
+                address: frame.address,
+                values: frame.values,
+                bindings: frame.bindings,
+            })
+            .collect();
+        self.store_preset(name, frames)
+    }
+
+    pub fn preset_frames(&self, name: &str) -> Result<Option<Vec<FrameUpdate>>> {
+        self.presets
+            .read()
+            .map(|presets| {
+                presets
+                    .iter()
+                    .find(|preset| preset.name == name)
+                    .map(|preset| preset.frames.clone())
+            })
+            .map_err(|_| anyhow!("verrou des états de frames indisponible"))
+    }
+
+    pub fn import_preset(
+        &self,
+        name: &str,
+        frames: Vec<FrameUpdate>,
+    ) -> std::result::Result<(), UpdateError> {
+        let name =
+            validate_preset_name(name).map_err(|error| UpdateError::Invalid(error.to_string()))?;
+        let current = self
+            .frames
+            .read()
+            .map_err(|_| UpdateError::LockPoisoned)?
+            .clone();
+        apply_updates(&current, frames.clone(), &self.memory)
+            .map_err(|error| UpdateError::Invalid(error.to_string()))?;
+        self.store_preset(name, frames)
+    }
+
+    fn store_preset(
+        &self,
+        name: &str,
+        frames: Vec<FrameUpdate>,
+    ) -> std::result::Result<(), UpdateError> {
+        let mut presets = self
+            .presets
+            .write()
+            .map_err(|_| UpdateError::LockPoisoned)?;
+        let mut updated = presets.clone();
+        if let Some(preset) = updated.iter_mut().find(|preset| preset.name == name) {
+            preset.frames = frames;
+        } else {
+            updated.push(FramePreset {
+                name: name.to_string(),
+                frames,
+            });
+        }
+        let contents = serde_json::to_vec_pretty(&updated)
+            .map_err(|error| UpdateError::Invalid(error.to_string()))?;
+        fs::write(self.presets_path.as_path(), contents).map_err(UpdateError::Persistence)?;
+        *presets = updated;
+        Ok(())
+    }
+
+    pub fn apply_preset(&self, name: &str) -> std::result::Result<(), UpdateError> {
+        let frames = self
+            .presets
+            .read()
+            .map_err(|_| UpdateError::LockPoisoned)?
+            .iter()
+            .find(|preset| preset.name == name)
+            .map(|preset| preset.frames.clone())
+            .ok_or_else(|| UpdateError::Invalid(format!("état introuvable : {name}")))?;
+        self.update(frames)
+    }
+
+    pub fn delete_preset(&self, name: &str) -> Result<bool> {
+        let mut presets = self
+            .presets
+            .write()
+            .map_err(|_| anyhow!("verrou des états de frames indisponible"))?;
+        let mut updated = presets.clone();
+        let original_len = updated.len();
+        updated.retain(|preset| preset.name != name);
+        if updated.len() == original_len {
+            return Ok(false);
+        }
+        let contents = serde_json::to_vec_pretty(&updated)?;
+        fs::write(self.presets_path.as_path(), contents).with_context(|| {
+            format!("impossible de sauvegarder {}", self.presets_path.display())
+        })?;
+        *presets = updated;
+        Ok(true)
     }
 
     pub fn update(&self, updates: Vec<FrameUpdate>) -> std::result::Result<(), UpdateError> {
@@ -133,6 +272,23 @@ impl ModbusState {
             .map_err(|_| anyhow!("verrou de mémoire indisponible"))
     }
 
+    pub fn set_variable_value(&self, name: &str, input: serde_json::Value) -> Result<Value> {
+        let value = {
+            let mut memory = self
+                .memory
+                .write()
+                .map_err(|_| anyhow!("verrou de mémoire indisponible"))?;
+            let current = memory
+                .get(name)
+                .ok_or_else(|| anyhow!("variable inconnue : {name}"))?;
+            let value = parse_variable_value(current, input)?;
+            memory.set(name, value);
+            value
+        };
+        self.sync_from_memory()?;
+        Ok(value)
+    }
+
     pub fn sync_from_memory(&self) -> Result<()> {
         let memory = self
             .memory
@@ -174,6 +330,38 @@ impl ModbusState {
             }
         }
         Ok(())
+    }
+}
+
+fn parse_variable_value(current: Value, input: serde_json::Value) -> Result<Value> {
+    let invalid = || anyhow!("valeur invalide pour le type {}", current.type_name());
+    match current {
+        Value::Bool(_) => input.as_bool().map(Value::Bool).ok_or_else(invalid),
+        Value::Int16(_) => input
+            .as_i64()
+            .filter(|value| (i16::MIN as i64..=i16::MAX as i64).contains(value))
+            .map(|value| Value::Int16(value as i16))
+            .ok_or_else(invalid),
+        Value::UInt16(_) => input
+            .as_u64()
+            .filter(|value| *value <= u16::MAX as u64)
+            .map(|value| Value::UInt16(value as u16))
+            .ok_or_else(invalid),
+        Value::Word(_) => input
+            .as_u64()
+            .filter(|value| *value <= u16::MAX as u64)
+            .map(|value| Value::Word(value as u16))
+            .ok_or_else(invalid),
+        Value::UInt32(_) => input
+            .as_u64()
+            .filter(|value| *value <= u32::MAX as u64)
+            .map(|value| Value::UInt32(value as u32))
+            .ok_or_else(invalid),
+        Value::DWord(_) => input
+            .as_u64()
+            .filter(|value| *value <= u32::MAX as u64)
+            .map(|value| Value::DWord(value as u32))
+            .ok_or_else(invalid),
     }
 }
 
@@ -786,6 +974,167 @@ mod tests {
     }
 
     #[test]
+    fn saves_and_applies_complete_frame_presets() {
+        let config_path = std::env::temp_dir().join(format!(
+            "automate-sim-frame-presets-{}.json",
+            std::process::id()
+        ));
+        let presets_path = config_path.with_extension("presets.json");
+        let _ = fs::remove_file(&config_path);
+        let _ = fs::remove_file(&presets_path);
+        let memory = test_memory();
+        let (state, _) =
+            ModbusState::load(Path::new("COMM.DAT"), &config_path, memory.clone()).unwrap();
+
+        let mut state_a: Vec<_> = state
+            .snapshot()
+            .unwrap()
+            .into_iter()
+            .map(|frame| FrameUpdate {
+                name: frame.name,
+                address: frame.address,
+                values: frame.values,
+                bindings: frame.bindings,
+            })
+            .collect();
+        state_a[0].address = 2490;
+        state_a[0].values[0] = 1234;
+        state_a[0].bindings.push(VariableBinding {
+            variable: "counter".to_string(),
+            offset: 1,
+        });
+        state_a[1].values[0] = 2345;
+        state.update(state_a).unwrap();
+        state.save_preset("État A").unwrap();
+
+        let mut state_b: Vec<_> = state
+            .snapshot()
+            .unwrap()
+            .into_iter()
+            .map(|frame| FrameUpdate {
+                name: frame.name,
+                address: frame.address,
+                values: frame.values,
+                bindings: frame.bindings,
+            })
+            .collect();
+        state_b[0].address = 2495;
+        state_b[0].values[0] = 3456;
+        state_b[0].bindings.clear();
+        state_b[1].values[0] = 4567;
+        state.update(state_b).unwrap();
+        state.save_preset("État B").unwrap();
+
+        state.apply_preset("État A").unwrap();
+        let applied_a = state.snapshot().unwrap();
+        assert_eq!(applied_a[0].address, 2490);
+        assert_eq!(applied_a[0].values[0], 1234);
+        assert_eq!(applied_a[0].bindings[0].variable, "counter");
+        assert_eq!(applied_a[1].values[0], 2345);
+
+        state.apply_preset("État B").unwrap();
+        let applied_b = state.snapshot().unwrap();
+        assert_eq!(applied_b[0].address, 2495);
+        assert!(applied_b[0].bindings.is_empty());
+        assert_eq!(applied_b[1].values[0], 4567);
+
+        let mut imported: Vec<_> = state
+            .snapshot()
+            .unwrap()
+            .into_iter()
+            .map(|frame| FrameUpdate {
+                name: frame.name,
+                address: frame.address,
+                values: frame.values,
+                bindings: frame.bindings,
+            })
+            .collect();
+        imported[0].values[0] = 5678;
+        state.import_preset("Importé", imported.clone()).unwrap();
+        assert_eq!(
+            state.snapshot().unwrap()[0].values[0],
+            applied_b[0].values[0]
+        );
+        imported.pop();
+        assert!(state.import_preset("Invalide", imported).is_err());
+
+        let (reloaded, _) = ModbusState::load(Path::new("COMM.DAT"), &config_path, memory).unwrap();
+        assert_eq!(
+            reloaded.preset_names().unwrap(),
+            vec![
+                "État A".to_string(),
+                "État B".to_string(),
+                "Importé".to_string()
+            ]
+        );
+        reloaded.apply_preset("État A").unwrap();
+        assert_eq!(reloaded.snapshot().unwrap()[0].address, 2490);
+        assert!(reloaded.delete_preset("État A").unwrap());
+        assert!(!reloaded.delete_preset("État A").unwrap());
+        assert_eq!(reloaded.preset_names().unwrap(), vec!["État B", "Importé"]);
+
+        fs::remove_file(config_path).unwrap();
+        fs::remove_file(presets_path).unwrap();
+    }
+
+    #[test]
+    fn manual_variable_updates_keep_the_type_and_sync_linked_registers() {
+        let config_path = std::env::temp_dir().join(format!(
+            "automate-sim-forced-variables-{}.json",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&config_path);
+        let memory = test_memory();
+        memory.write().unwrap().set("word", Value::Word(0));
+        let (state, _) = ModbusState::load(Path::new("COMM.DAT"), &config_path, memory).unwrap();
+        let mut frames: Vec<_> = state
+            .snapshot()
+            .unwrap()
+            .into_iter()
+            .map(|frame| FrameUpdate {
+                name: frame.name,
+                address: frame.address,
+                values: frame.values,
+                bindings: frame.bindings,
+            })
+            .collect();
+        frames[0].bindings.push(VariableBinding {
+            variable: "counter".to_string(),
+            offset: 1,
+        });
+        state.update(frames).unwrap();
+
+        assert_eq!(
+            state
+                .set_variable_value("counter", serde_json::json!(0x12345678u32))
+                .unwrap(),
+            Value::UInt32(0x12345678)
+        );
+        let snapshot = state.snapshot().unwrap();
+        let first = &snapshot[0];
+        assert_eq!(&first.values[1..3], &[0x1234, 0x5678]);
+        assert_eq!(
+            state
+                .set_variable_value("temperature", serde_json::json!(-32768))
+                .unwrap(),
+            Value::Int16(i16::MIN)
+        );
+        assert_eq!(
+            state
+                .set_variable_value("word", serde_json::json!(65535))
+                .unwrap(),
+            Value::Word(u16::MAX)
+        );
+        assert!(state
+            .set_variable_value("word", serde_json::json!(-1))
+            .is_err());
+        assert!(state
+            .set_variable_value("alarm", serde_json::json!(1))
+            .is_err());
+        fs::remove_file(config_path).unwrap();
+    }
+
+    #[test]
     fn serves_and_writes_holding_registers() {
         let frames = parse_frames(include_str!("../../COMM.DAT")).unwrap();
         let service = ModbusService {
@@ -845,6 +1194,8 @@ mod tests {
         let state = ModbusState {
             frames: service.frames.clone(),
             config_path: Arc::new(PathBuf::from("unused-test-config.json")),
+            presets_path: Arc::new(PathBuf::from("unused-test-presets.json")),
+            presets: Arc::new(RwLock::new(Vec::new())),
             memory,
         };
         state.sync_from_memory().unwrap();
@@ -861,6 +1212,8 @@ mod tests {
                 parse_frames(include_str!("../../COMM.DAT")).unwrap(),
             )),
             config_path: Arc::new(PathBuf::from("unused-test-config.json")),
+            presets_path: Arc::new(PathBuf::from("unused-test-presets.json")),
+            presets: Arc::new(RwLock::new(Vec::new())),
             memory: test_memory(),
         };
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

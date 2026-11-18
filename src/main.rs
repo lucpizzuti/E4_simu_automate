@@ -83,7 +83,12 @@ fn simulate_input(mem: &mut Memory, cycle: u32) {
 /// normalement pas besoin de toucher à cette fonction : elle boucle sur
 /// TOUTES les variables présentes dans `mem`, donc toute variable ajoutée
 /// via mem.set(...) apparaît automatiquement dans l'interface web.
-fn state_json(cycle: u32, mem: &Memory) -> String {
+fn state_json(
+    cycle: u32,
+    mem: &Memory,
+    paused: bool,
+    forced_variables: &std::collections::BTreeMap<String, Value>,
+) -> String {
     let variables: Vec<_> = mem
         .dump()
         .into_iter()
@@ -92,10 +97,11 @@ fn state_json(cycle: u32, mem: &Memory) -> String {
                 "name": name,
                 "type": value.type_name(),
                 "value": value.to_json(),
+                "forced": forced_variables.contains_key(&name),
             })
         })
         .collect();
-    json!({ "cycle": cycle, "variables": variables }).to_string()
+    json!({ "cycle": cycle, "paused": paused, "variables": variables }).to_string()
 }
 
 #[tokio::main]
@@ -114,9 +120,11 @@ async fn main() -> Result<()> {
     // `tx` est le "haut-parleur" WebSocket : tout ce qu'on envoie avec
     // tx.send(...) est reçu par tous les navigateurs connectés à la page.
     let (tx, _rx) = broadcast::channel::<String>(16);
+    let simulation = web::SimulationControl::default();
     let state = Arc::new(web::AppState {
         tx: tx.clone(),
         modbus: modbus.clone(),
+        simulation: simulation.clone(),
     });
 
     // --- Boucle de simulation (le "moteur automate") ---
@@ -124,15 +132,26 @@ async fn main() -> Result<()> {
     // pour que l'un ne bloque jamais l'autre.
     let loop_memory = memory.clone();
     let loop_modbus = modbus.clone();
+    let loop_simulation = simulation;
     tokio::spawn(async move {
         let mut cycle: u32 = 0;
         loop {
-            cycle += 1;
+            let paused = loop_simulation.is_paused();
+            if !paused {
+                cycle = cycle.wrapping_add(1);
+            }
 
             let frames = match loop_modbus.snapshot() {
                 Ok(frames) => frames,
                 Err(error) => {
                     eprintln!("Erreur de lecture des associations Modbus : {error:#}");
+                    break;
+                }
+            };
+            let forced_values = match loop_simulation.forced_values() {
+                Ok(values) => values,
+                Err(error) => {
+                    eprintln!("Erreur de lecture des variables forcées : {error:#}");
                     break;
                 }
             };
@@ -149,17 +168,22 @@ async fn main() -> Result<()> {
                     eprintln!("Erreur : verrou de mémoire indisponible");
                     break;
                 };
-                if !variable_is_mapped("temperature") {
-                    simulate_input(&mut mem, cycle);
-                }
-                run_logic(&mut mem, !variable_is_mapped("alarm"));
+                if !paused {
+                    if !variable_is_mapped("temperature") {
+                        simulate_input(&mut mem, cycle);
+                    }
+                    run_logic(&mut mem, !variable_is_mapped("alarm"));
 
-                if let Some(Value::UInt32(c)) = mem.get("counter") {
-                    mem.set("counter", Value::UInt32(c.wrapping_add(1)));
-                }
+                    if let Some(Value::UInt32(c)) = mem.get("counter") {
+                        mem.set("counter", Value::UInt32(c.wrapping_add(1)));
+                    }
 
-                if let Some(Value::Int16(c)) = mem.get("counter2") {
-                    mem.set("counter2", Value::Int16(c.wrapping_sub(1)));
+                    if let Some(Value::Int16(c)) = mem.get("counter2") {
+                        mem.set("counter2", Value::Int16(c.wrapping_sub(1)));
+                    }
+                }
+                for (name, value) in &forced_values {
+                    mem.set(name, *value);
                 }
             }
 
@@ -171,7 +195,7 @@ async fn main() -> Result<()> {
                     eprintln!("Erreur : verrou de mémoire indisponible");
                     break;
                 };
-                state_json(cycle, &mem)
+                state_json(cycle, &mem, paused, &forced_values)
             };
             let _ = tx.send(state);
             sleep(Duration::from_millis(200)).await;
