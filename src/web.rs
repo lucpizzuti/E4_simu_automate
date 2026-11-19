@@ -11,7 +11,7 @@
 //! envoyé, modifie state_json() et la boucle dans main.rs.
 
 use crate::{
-    communication::modbus_server::{FrameUpdate, ModbusState, UpdateError},
+    communication::modbus_server::{FrameUpdate, ModbusFrame, ModbusState, UpdateError},
     core::value::Value,
 };
 use axum::{
@@ -32,6 +32,15 @@ use std::{
     },
 };
 use tokio::sync::broadcast;
+
+const THISPROJECT_SOURCE: &str = include_str!("core/ThisProject.vb");
+const COMM_SOURCE: &str = include_str!("../COMM.DAT");
+
+#[derive(Default)]
+struct PlcRegisterMetadata {
+    variable: Option<String>,
+    bits: Vec<Option<String>>,
+}
 
 #[derive(Clone, Default)]
 pub struct SimulationControl {
@@ -114,6 +123,8 @@ async fn get_modbus(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                 StatusCode::OK,
                 Json(serde_json::json!({
                     "frames": frames,
+                    "emplacements": crate::ORDRE.iter().map(|emplacement| format!("{emplacement:?}")).collect::<Vec<_>>(),
+                    "register_metadata": thisproject_register_metadata(&frames),
                     "variables": variables.into_iter().map(|(name, variable_type, value)| {
                         serde_json::json!({ "name": name, "type": variable_type, "value": value })
                     }).collect::<Vec<_>>(),
@@ -124,6 +135,147 @@ async fn get_modbus(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         },
         Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
     }
+}
+
+fn plc_register_address(tag: &str) -> Option<u16> {
+    tag.rsplit(".MW").next()?.trim().parse().ok()
+}
+
+fn parse_thisproject_registers() -> BTreeMap<u16, PlcRegisterMetadata> {
+    let lines: Vec<_> = THISPROJECT_SOURCE.lines().collect();
+    let mut registers = BTreeMap::<u16, PlcRegisterMetadata>::new();
+
+    for (index, line) in lines.iter().enumerate() {
+        if !line.contains("Variables.Add") {
+            continue;
+        }
+        let Some(tag) = line.split('"').nth(1) else {
+            continue;
+        };
+        let Some(address) = plc_register_address(tag) else {
+            continue;
+        };
+        let variable = lines[index + 1..(index + 5).min(lines.len())]
+            .iter()
+            .find_map(|line| {
+                let assignment = line.trim().strip_prefix("Set ")?;
+                Some(
+                    assignment
+                        .split_whitespace()
+                        .next()?
+                        .trim_end_matches("_Var")
+                        .to_string(),
+                )
+            });
+        if let Some(variable) = variable {
+            registers.entry(address).or_default().variable = Some(variable);
+        }
+    }
+
+    let mut in_handler = false;
+    let mut handler_address = None;
+    let mut handler_bits = vec![None; 16];
+    for line in THISPROJECT_SOURCE.lines() {
+        let trimmed = line.trim();
+        if !in_handler
+            && (trimmed.starts_with("Private Sub ") || trimmed.starts_with("Public Sub "))
+            && trimmed.contains("_ValueChange()")
+        {
+            in_handler = true;
+            handler_address = None;
+            handler_bits = vec![None; 16];
+            continue;
+        }
+        if !in_handler {
+            continue;
+        }
+        if let Some(start) = line.find("PIERCAN.PLC.MW") {
+            let tag = line[start..]
+                .trim_start_matches('[')
+                .split(|character: char| !character.is_ascii_alphanumeric() && character != '.')
+                .next()
+                .unwrap_or_default();
+            handler_address = plc_register_address(tag).or(handler_address);
+        }
+        if let Some((target, expression)) = line.split_once('=') {
+            if let Some((_, bit_expression)) = expression.split_once("2 ^") {
+                let bit = bit_expression
+                    .trim_start()
+                    .split(')')
+                    .next()
+                    .and_then(|value| value.trim().parse::<usize>().ok());
+                let name = target
+                    .trim()
+                    .strip_prefix('[')
+                    .and_then(|target| target.strip_suffix(']'));
+                if let (Some(bit), Some(name)) = (bit, name) {
+                    if let Some(slot) = handler_bits.get_mut(bit) {
+                        *slot = Some(name.to_string());
+                    }
+                }
+            }
+        }
+        if trimmed == "End Sub" {
+            if let Some(address) = handler_address {
+                if handler_bits.iter().any(Option::is_some) {
+                    registers.entry(address).or_default().bits = handler_bits.clone();
+                }
+            }
+            in_handler = false;
+        }
+    }
+
+    registers
+}
+
+fn thisproject_frame_bases() -> BTreeMap<String, u16> {
+    COMM_SOURCE
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<_> = line.split(',').collect();
+            if fields.first() != Some(&"FRAME") {
+                return None;
+            }
+            Some((fields.get(4)?.to_string(), fields.get(9)?.parse().ok()?))
+        })
+        .collect()
+}
+
+fn thisproject_register_metadata(frames: &[ModbusFrame]) -> serde_json::Value {
+    let registers = parse_thisproject_registers();
+    let frame_bases = thisproject_frame_bases();
+    let metadata = frames
+        .iter()
+        .map(|frame| {
+            let base = frame_bases.get(&frame.name).copied();
+            let entries: Vec<_> = frame
+                .values
+                .iter()
+                .enumerate()
+                .map(|(offset, _)| {
+                    let plc_address = base.and_then(|base| {
+                        let register_offset = if frame.name == "FrameEmplPlateaux" {
+                            offset / 2
+                        } else {
+                            offset
+                        };
+                        let plc_offset = u16::try_from(register_offset.checked_mul(2)?).ok()?;
+                        base.checked_add(plc_offset)
+                    });
+                    plc_address.map_or(serde_json::Value::Null, |address| {
+                        let register = registers.get(&address);
+                        serde_json::json!({
+                            "plc_address": address,
+                            "variable": register.and_then(|register| register.variable.as_deref()),
+                            "bits": register.map(|register| &register.bits),
+                        })
+                    })
+                })
+                .collect();
+            (frame.name.clone(), entries)
+        })
+        .collect::<BTreeMap<_, _>>();
+    serde_json::to_value(metadata).expect("register metadata is serializable")
 }
 
 async fn update_modbus(
@@ -350,6 +502,33 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thisproject_register_metadata_includes_bit_names_and_plateau_addresses() {
+        let registers = parse_thisproject_registers();
+        assert_eq!(
+            registers[&2000].bits[0].as_deref(),
+            Some("PIERCAN.PLATEAU.inhibition.plateau1")
+        );
+        assert_eq!(
+            registers[&2000].bits[15].as_deref(),
+            Some("PIERCAN.PLATEAU.inhibition.plateau16")
+        );
+
+        let frame = ModbusFrame {
+            name: "FrameEmplPlateaux".to_string(),
+            address: 2544,
+            values: vec![0; 120],
+            minimum_registers: 120,
+            read_only: false,
+            bindings: Vec::new(),
+        };
+        let metadata = thisproject_register_metadata(&[frame]);
+        assert_eq!(metadata["FrameEmplPlateaux"][0]["plc_address"], 2544);
+        assert_eq!(metadata["FrameEmplPlateaux"][0]["variable"], "EmplRef_1_2");
+        assert_eq!(metadata["FrameEmplPlateaux"][1]["variable"], "EmplRef_1_2");
+        assert_eq!(metadata["FrameEmplPlateaux"][2]["plc_address"], 2546);
+    }
 
     #[test]
     fn simulation_control_tracks_pause_and_forced_variables() {

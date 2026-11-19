@@ -40,6 +40,29 @@ pub struct FrameUpdate {
     pub bindings: Vec<VariableBinding>,
 }
 
+const PLATEAU_FRAME_NAME: &str = "FrameEmplPlateaux";
+const RESERVED_HIGH_WORD_OFFSET: usize = 21;
+
+fn clear_reserved_high_word(frame_name: &str, values: &mut [u16]) {
+    if frame_name == PLATEAU_FRAME_NAME {
+        if let Some(reserved_word) = values.get_mut(RESERVED_HIGH_WORD_OFFSET) {
+            *reserved_word = 0;
+        }
+    }
+}
+
+fn clear_reserved_frame_words(frames: &mut [ModbusFrame]) {
+    for frame in frames {
+        clear_reserved_high_word(&frame.name, &mut frame.values);
+    }
+}
+
+fn clear_reserved_update_words(frames: &mut [FrameUpdate]) {
+    for frame in frames {
+        clear_reserved_high_word(&frame.name, &mut frame.values);
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct FramePreset {
     name: String,
@@ -89,8 +112,9 @@ impl ModbusState {
             })?;
             frames = restore_saved_updates(&frames, updates, &memory)?;
         }
+        clear_reserved_frame_words(&mut frames);
         let presets_path = config_path.with_extension("presets.json");
-        let presets = if presets_path.exists() {
+        let mut presets: Vec<FramePreset> = if presets_path.exists() {
             let saved = fs::read(&presets_path)
                 .with_context(|| format!("impossible de lire {}", presets_path.display()))?;
             serde_json::from_slice(&saved).with_context(|| {
@@ -99,6 +123,9 @@ impl ModbusState {
         } else {
             Vec::new()
         };
+        for preset in &mut presets {
+            clear_reserved_update_words(&mut preset.frames);
+        }
         sync_frame_bindings_to_memory(&frames, &memory)?;
 
         Ok((
@@ -118,6 +145,28 @@ impl ModbusState {
             .read()
             .map(|frames| frames.clone())
             .map_err(|_| anyhow!("verrou de configuration Modbus indisponible"))
+    }
+
+    pub fn update_runtime_frame_values(
+        &self,
+        name: &str,
+        address: u16,
+        values: &[u16],
+    ) -> Result<()> {
+        let mut frames = self
+            .frames
+            .write()
+            .map_err(|_| anyhow!("verrou de configuration Modbus indisponible"))?;
+        let frame = frames
+            .iter_mut()
+            .find(|frame| frame.name == name)
+            .ok_or_else(|| anyhow!("frame Modbus introuvable : {name}"))?;
+        if frame.address != address || frame.values.len() != values.len() {
+            bail!("la configuration de la frame {name} a changé pendant le cycle");
+        }
+        frame.values.copy_from_slice(values);
+        clear_reserved_high_word(name, &mut frame.values);
+        Ok(())
     }
 
     pub fn preset_names(&self) -> Result<Vec<String>> {
@@ -161,10 +210,11 @@ impl ModbusState {
     pub fn import_preset(
         &self,
         name: &str,
-        frames: Vec<FrameUpdate>,
+        mut frames: Vec<FrameUpdate>,
     ) -> std::result::Result<(), UpdateError> {
         let name =
             validate_preset_name(name).map_err(|error| UpdateError::Invalid(error.to_string()))?;
+        clear_reserved_update_words(&mut frames);
         let current = self
             .frames
             .read()
@@ -239,8 +289,10 @@ impl ModbusState {
             .clone();
         let mut updated = apply_updates(&current, updates, &self.memory)
             .map_err(|error| UpdateError::Invalid(error.to_string()))?;
+        clear_reserved_frame_words(&mut updated);
         initialize_new_bindings(&current, &mut updated, &self.memory)
             .map_err(|error| UpdateError::Invalid(error.to_string()))?;
+        clear_reserved_frame_words(&mut updated);
         let persisted: Vec<_> = updated
             .iter()
             .map(|frame| FrameUpdate {
@@ -329,6 +381,7 @@ impl ModbusState {
                 }
             }
         }
+        clear_reserved_frame_words(&mut frames);
         Ok(())
     }
 }
@@ -534,6 +587,16 @@ fn validate_bindings(frames: &[ModbusFrame], memory: &Arc<RwLock<Memory>>) -> Re
                     binding.variable,
                     width,
                     binding.offset,
+                    frame.name
+                );
+            }
+            if frame.name == PLATEAU_FRAME_NAME
+                && (binding.offset..binding.offset + width).contains(&RESERVED_HIGH_WORD_OFFSET)
+            {
+                bail!(
+                    "la variable {} ne peut pas utiliser le registre réservé à l'offset {} dans {}",
+                    binding.variable,
+                    RESERVED_HIGH_WORD_OFFSET,
                     frame.name
                 );
             }
@@ -743,6 +806,7 @@ impl ModbusService {
         for (location, value) in locations.into_iter().zip(values) {
             frames[location.0].values[location.1] = *value;
         }
+        clear_reserved_frame_words(&mut frames);
         drop(frames);
         self.sync_bindings_to_memory()
     }
@@ -971,6 +1035,94 @@ mod tests {
             }]
         );
         fs::remove_file(config_path).unwrap();
+    }
+
+    #[test]
+    fn keeps_reserved_plateau_high_word_zero() {
+        let config_path = std::env::temp_dir().join(format!(
+            "automate-sim-reserved-word-{}.json",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&config_path);
+        let mut saved: Vec<_> = parse_frames(include_str!("../../COMM.DAT"))
+            .unwrap()
+            .into_iter()
+            .map(|frame| FrameUpdate {
+                name: frame.name,
+                address: frame.address,
+                values: frame.values,
+                bindings: Vec::new(),
+            })
+            .collect();
+        let plateau_frame = saved
+            .iter_mut()
+            .find(|frame| frame.name == PLATEAU_FRAME_NAME)
+            .unwrap();
+        plateau_frame.values[RESERVED_HIGH_WORD_OFFSET] = u16::MAX;
+        fs::write(&config_path, serde_json::to_vec(&saved).unwrap()).unwrap();
+
+        let memory = test_memory();
+        let (state, _) =
+            ModbusState::load(Path::new("COMM.DAT"), &config_path, memory.clone()).unwrap();
+        let plateau = state
+            .snapshot()
+            .unwrap()
+            .into_iter()
+            .find(|frame| frame.name == PLATEAU_FRAME_NAME)
+            .unwrap();
+        assert_eq!(plateau.values[RESERVED_HIGH_WORD_OFFSET], 0);
+
+        let mut updates: Vec<_> = state
+            .snapshot()
+            .unwrap()
+            .into_iter()
+            .map(|frame| FrameUpdate {
+                name: frame.name,
+                address: frame.address,
+                values: frame.values,
+                bindings: frame.bindings,
+            })
+            .collect();
+        let plateau = updates
+            .iter_mut()
+            .find(|frame| frame.name == PLATEAU_FRAME_NAME)
+            .unwrap();
+        plateau.values[RESERVED_HIGH_WORD_OFFSET] = u16::MAX;
+        let plateau_address = plateau.address;
+        state.update(updates).unwrap();
+
+        let service = ModbusService {
+            frames: state.frames.clone(),
+            memory,
+        };
+        service
+            .write_registers(
+                plateau_address + RESERVED_HIGH_WORD_OFFSET as u16,
+                &[u16::MAX],
+            )
+            .unwrap();
+        assert_eq!(
+            service
+                .read_registers(plateau_address + RESERVED_HIGH_WORD_OFFSET as u16, 1)
+                .unwrap(),
+            vec![0]
+        );
+        fs::remove_file(config_path).unwrap();
+    }
+
+    #[test]
+    fn prevents_bindings_from_overwriting_reserved_plateau_word() {
+        let mut frames = parse_frames(include_str!("../../COMM.DAT")).unwrap();
+        let plateau = frames
+            .iter_mut()
+            .find(|frame| frame.name == PLATEAU_FRAME_NAME)
+            .unwrap();
+        plateau.bindings.push(VariableBinding {
+            variable: "counter".to_string(),
+            offset: RESERVED_HIGH_WORD_OFFSET - 1,
+        });
+
+        assert!(validate_bindings(&frames, &test_memory()).is_err());
     }
 
     #[test]

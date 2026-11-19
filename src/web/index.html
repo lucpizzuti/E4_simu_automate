@@ -431,7 +431,7 @@
         aria-selected="false" aria-controls="statesPanel">États sauvegardés</button>
     </div>
     <section class="tab-panel" id="framesPanel" role="tabpanel" aria-labelledby="framesTab">
-      <p class="cycle">Ouvrez une adresse pour basculer ses bits (15 à 0) ou saisir sa valeur. Les changements sont sauvegardés immédiatement.</p>
+      <p class="cycle">Ouvrez une adresse pour basculer ses bits (15 à 0) ou saisir sa valeur. Survolez un bit pour voir son nom dans ThisProject; les registres de FrameEmplPlateaux indiquent aussi leur emplacement. Les changements sont sauvegardés immédiatement.</p>
       <p class="cycle">Pour lier une variable, sélectionnez-la, indiquez l’offset du premier registre dans la frame, puis cliquez sur « Lier la variable ». BOOL et les valeurs 16 bits utilisent un registre; UINT32 et DWORD en utilisent deux, poids fort en premier. La liaison synchronise variable et registre; la simulation peut recalculer la variable à chaque cycle.</p>
       <div class="register-tools">
         <label class="state-field" for="registerSearch">Rechercher une frame ou une adresse
@@ -511,6 +511,8 @@
     const searchStatus = document.getElementById('searchStatus');
     const rowEls = {};
     let variablesByName = {};
+    let registerMetadataByFrame = {};
+    let emplacementLabels = [];
     let simulationPaused = false;
     let registerRadix = 10;
     let presetHasChanges = false;
@@ -897,6 +899,60 @@
       return ['UINT32', 'DWORD'].includes(variablesByName[variable]?.type) ? 2 : 1;
     }
 
+    function formatEmplacementName(name) {
+      return name
+        .replace(/^FourPS/, 'Four pré-séchage ')
+        .replace(/([a-z])([A-Z])/g, '$1 $2')
+        .replace(/([A-Za-z])(\d)/g, '$1 $2')
+        .replace(/_/g, ' / ');
+    }
+
+    function isReservedEmplacement(name) {
+      return /^Reserve[123]$/.test(name);
+    }
+
+    function registerMetadata(section, offset) {
+      return registerMetadataByFrame[section.dataset.name]?.[offset] || null;
+    }
+
+    function registerLabel(section, offset, address) {
+      const metadata = registerMetadata(section, offset);
+      if (section.dataset.name === 'FrameEmplPlateaux' && emplacementLabels[offset] === 'Reserve1') {
+        return `Registre ${address + offset} — Emplacement 22 (réserve, maintenu à 0)`;
+      }
+      if (section.dataset.name === 'FrameEmplPlateaux' && isReservedEmplacement(emplacementLabels[offset] || '')) {
+        return `Registre ${address + offset} — Réserve (hors circulation)`;
+      }
+      if (section.dataset.name === 'FrameEmplPlateaux' && emplacementLabels[offset]) {
+        return `Registre ${address + offset} — ${formatEmplacementName(emplacementLabels[offset])}`;
+      }
+      if (metadata?.variable) {
+        return `Registre ${address + offset} — ${metadata.variable}`;
+      }
+      return `Registre ${address + offset} (offset ${offset})`;
+    }
+
+    function bitTooltip(section, offset, bit, address) {
+      const metadata = registerMetadata(section, offset);
+      const name = metadata?.bits?.[bit];
+      if (name) return `Bit ${bit} — ${name} (PLC MW${metadata.plc_address})`;
+
+      if (section.dataset.name === 'FrameEmplPlateaux' && emplacementLabels[offset] === 'Reserve1') {
+        return `Bit ${bit} de l'emplacement 22 — réserve maintenue à 0 (PLC MW${metadata?.plc_address ?? address + offset})`;
+      }
+      if (section.dataset.name === 'FrameEmplPlateaux' && isReservedEmplacement(emplacementLabels[offset] || '')) {
+        return `Bit ${bit} de la réserve — cet emplacement est franchi sans déplacement (PLC MW${metadata?.plc_address ?? address + offset})`;
+      }
+      if (section.dataset.name === 'FrameEmplPlateaux' && emplacementLabels[offset]) {
+        const location = formatEmplacementName(emplacementLabels[offset]);
+        return `Bit ${bit} du numéro de plateau à ${location} (PLC MW${metadata?.plc_address ?? address + offset})`;
+      }
+      if (metadata?.variable) {
+        return `Bit ${bit} de ${metadata.variable} (PLC MW${metadata.plc_address}) — non décodé dans ThisProject`;
+      }
+      return `Bit ${bit} du registre ${address + offset} — nom non défini dans ThisProject`;
+    }
+
     function updateBindingIndicator(details, section, offset) {
       const binding = (section._bindings || []).find((item) => {
         return item.offset <= offset && offset < item.offset + registerBindingWidth(item.variable);
@@ -923,11 +979,16 @@
         values.forEach((value, offset) => {
           const details = document.createElement('details');
           details.className = 'register-row';
+          const reservedHighWord = section.dataset.name === 'FrameEmplPlateaux' && offset === 21;
 
           const summary = document.createElement('summary');
           const addressLabel = document.createElement('span');
           addressLabel.className = 'register-address';
-          addressLabel.textContent = `Registre ${address + offset} (offset ${offset})`;
+          addressLabel.textContent = registerLabel(section, offset, address);
+          const sourceMetadata = registerMetadata(section, offset);
+          if (sourceMetadata?.plc_address) {
+            addressLabel.title = `PLC MW${sourceMetadata.plc_address}${sourceMetadata.variable ? ` — ${sourceMetadata.variable}` : ''}`;
+          }
           const bindingIndicator = document.createElement('span');
           bindingIndicator.className = 'binding-indicator';
           const summaryValue = document.createElement('strong');
@@ -940,6 +1001,8 @@
           input.inputMode = 'text';
           input.className = 'register-value';
           input.setAttribute('aria-label', `Valeur du registre ${address + offset}`);
+          input.disabled = reservedHighWord;
+          if (reservedHighWord) input.title = 'Mot haut réservé, maintenu à 0';
           details.appendChild(input);
 
           const unlink = document.createElement('button');
@@ -961,8 +1024,11 @@
             button.type = 'button';
             button.className = 'bit-toggle';
             button.textContent = String(bit);
-            button.title = `Basculer le bit ${bit} du registre ${address + offset}`;
-            button.setAttribute('aria-label', `Basculer le bit ${bit} du registre ${address + offset}`);
+            button.disabled = reservedHighWord;
+            if (reservedHighWord) button.title = 'Mot haut réservé, maintenu à 0';
+            const tooltip = bitTooltip(section, offset, bit, address);
+            if (!reservedHighWord) button.title = tooltip;
+            button.setAttribute('aria-label', tooltip);
             button.addEventListener('click', async () => {
               const nextValue = Number(input.value) ^ (1 << bit);
               input.value = formatRegisterValue(nextValue);
@@ -999,14 +1065,23 @@
       } else {
         [...editor.children].forEach((details, offset) => {
           const addressLabel = details.querySelector('.register-address');
-          addressLabel.textContent = `Registre ${address + offset} (offset ${offset})`;
+          addressLabel.textContent = registerLabel(section, offset, address);
+          const sourceMetadata = registerMetadata(section, offset);
+          addressLabel.title = sourceMetadata?.plc_address
+            ? `PLC MW${sourceMetadata.plc_address}${sourceMetadata.variable ? ` — ${sourceMetadata.variable}` : ''}`
+            : '';
           details.querySelector('.register-value').setAttribute(
             'aria-label', `Valeur du registre ${address + offset}`
           );
+          const reservedHighWord = section.dataset.name === 'FrameEmplPlateaux' && offset === 21;
+          details.querySelector('.register-value').disabled = reservedHighWord;
+          details.querySelector('.register-value').title = reservedHighWord ? 'Mot haut réservé, maintenu à 0' : '';
           details.querySelectorAll('.bit-toggle').forEach((button, index) => {
             const bit = 15 - index;
-            button.title = `Basculer le bit ${bit} du registre ${address + offset}`;
-            button.setAttribute('aria-label', `Basculer le bit ${bit} du registre ${address + offset}`);
+            button.disabled = reservedHighWord;
+            const tooltip = bitTooltip(section, offset, bit, address);
+            button.title = reservedHighWord ? 'Mot haut réservé, maintenu à 0' : tooltip;
+            button.setAttribute('aria-label', tooltip);
           });
           updateRegisterValue(details, values[offset]);
           updateBindingIndicator(details, section, offset);
@@ -1067,6 +1142,8 @@
       if (!response.ok) throw new Error(await response.text());
       const config = await response.json();
       variablesByName = Object.fromEntries(config.variables.map((variable) => [variable.name, variable]));
+      registerMetadataByFrame = config.register_metadata || {};
+      emplacementLabels = config.emplacements || [];
       for (const variable of config.variables) updateVariableRow({ ...variable, forced: false });
       framesEl.replaceChildren();
       for (const frame of config.frames) {
@@ -1096,6 +1173,7 @@
               if (binding.offset + index < maxima.length) maxima[binding.offset + index] = word;
             });
           }
+          if (section.dataset.name === 'FrameEmplPlateaux' && maxima.length > 21) maxima[21] = 0;
           return maxima;
         };
         const isAtMaximum = () => {
@@ -1223,6 +1301,10 @@
           const width = registerBindingWidth(variable);
           if (!Number.isInteger(offset) || offset < 0 || offset + width > Number(section.dataset.count)) {
             saveStatus.textContent = `${variable} nécessite ${width} registre(s) à partir d’un offset valide.`;
+            return;
+          }
+          if (section.dataset.name === 'FrameEmplPlateaux' && offset <= 21 && offset + width > 21) {
+            saveStatus.textContent = 'Le registre réservé à l’offset 21 doit rester à 0 et ne peut pas être lié.';
             return;
           }
           section._bindings.push({ variable, offset });

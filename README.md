@@ -17,7 +17,11 @@ déclaré dans `COMM.DAT` (502 dans le fichier fourni).
 ### Modifier les frames
 
 Dans l’onglet **Frames**, ouvre un registre pour basculer ses bits ou saisir sa
-valeur (0 à 65535). Le champ de recherche filtre les frames par nom ou registre;
+valeur (0 à 65535). Survole un bit pour afficher son nom issu de
+`src/core/ThisProject.vb`. Dans `FrameEmplPlateaux`, chaque registre indique
+aussi l’emplacement correspondant. Le champ de recherche filtre les frames par
+nom ou registre. Le mot haut réservé à l’offset 21 reste toujours à `0` et
+ne peut être ni modifié ni lié à une variable;
 le menu **Format des valeurs** passe du décimal à l’hexadécimal. L’adresse
 affichée est l’adresse de départ plus l’offset. Les modifications sont
 appliquées et sauvegardées automatiquement.
@@ -67,6 +71,15 @@ conservée dans `modbus_config.json`; les états nommés le sont dans
 - Les frames `R` restent modifiables depuis l’interface, mais les clients
   Modbus ne peuvent pas leur écrire.
 - Le port 502 peut nécessiter des droits élevés ou être déjà utilisé.
+
+## Cycle des plateaux
+
+La frame `FrameEmplPlateaux` suit les emplacements définis dans `ThisProject.vb`.
+À chaque cycle actif de simulation, les 110 premiers registres avancent d’un
+emplacement et le dernier revient au premier. Les emplacements `Reserve1`,
+`Reserve2` et `Reserve3` sont exclus de la rotation; `Reserve1` (emplacement 22)
+est maintenu à `0`. Les registres supplémentaires ne sont pas déplacés. Mettre
+la simulation en pause arrête aussi cette rotation.
 
 ## Développement
 
